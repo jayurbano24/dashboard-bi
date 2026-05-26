@@ -614,3 +614,137 @@ export const getTechnicianDailySummary = async (
     movements,
   };
 };
+
+// ============ DESPACHO ============
+
+const DESPACHO_SHEET_TITLE = 'Conduces Despacho';
+const AGENCIES_SHEET_TITLE = 'Agencias Despacho';
+const DESPACHO_SHEET_ID = process.env.GOOGLE_DESPACHO_SHEET_ID || '1YmNih5V_IpFNqErbogJ75ienWBCbveuf2isa7MdZknM';
+
+const getDespachoSpreadsheet = async () => {
+  if (!jwt) throw new Error('Faltan GOOGLE_SERVICE_ACCOUNT_EMAIL o GOOGLE_PRIVATE_KEY.');
+  const doc = new GoogleSpreadsheet(DESPACHO_SHEET_ID, jwt as any);
+  await doc.loadInfo();
+  return doc;
+};
+
+const DESPACHO_HEADERS = [
+  'Conduce ID',
+  'Fecha',
+  'DOA',
+  'Courrier',
+  'Numero Guia',
+  'Precinto',
+  'Origen',
+  'Operador',
+  'Retail',
+  'Dealer',
+  'Sucursal',
+  'IMEI',
+  'No Orden',
+  'Marca',
+  'Modelo',
+  'Color',
+  'Producto',
+  'Canal Ingreso',
+  'Tipo Ingreso',
+  'Estado',
+  'Reparada',
+  'Grupo',
+  'Total Unidades',
+];
+
+const ensureDespachoSheet = async () => {
+  const doc = await getDespachoSpreadsheet();
+  const normalized = normalizeHeader(DESPACHO_SHEET_TITLE);
+  let sheet = doc.sheetsByIndex.find((s) => normalizeHeader(s.title) === normalized);
+  if (!sheet) {
+    sheet = await doc.addSheet({ title: DESPACHO_SHEET_TITLE });
+    await sheet.setHeaderRow(DESPACHO_HEADERS);
+  }
+  return sheet;
+};
+
+export const saveDespachoConduce = async (conduce: {
+  id: string;
+  fecha: string;
+  doa: boolean;
+  courrier: string;
+  numeroGuia: string;
+  precinto: string;
+  origen: string;
+  operador: string;
+  retail: string;
+  dealer: string;
+  sucursal: string;
+  unidadesDespachadas: Array<{
+    imei: string;
+    ordenNumero?: string;
+    marca: string;
+    modelo: string;
+    color?: string;
+    producto: string;
+    canalIngreso?: string;
+    tipoIngreso?: string;
+    estado: string;
+    reparada?: boolean | null;
+    grupo?: string;
+  }>;
+}) => {
+  const sheet = await ensureDespachoSheet();
+
+  const totalUnidades = conduce.unidadesDespachadas.length;
+
+  const rows = conduce.unidadesDespachadas.map((u) => ({
+    'Conduce ID': conduce.id,
+    'Fecha': conduce.fecha,
+    'DOA': conduce.doa ? 'Sí' : 'No',
+    'Courrier': conduce.courrier,
+    'Numero Guia': conduce.numeroGuia,
+    'Precinto': conduce.precinto,
+    'Origen': conduce.origen,
+    'Operador': conduce.operador,
+    'Retail': conduce.retail,
+    'Dealer': conduce.dealer,
+    'Sucursal': conduce.sucursal,
+    'IMEI': u.imei,
+    'No Orden': u.ordenNumero || '',
+    'Marca': u.marca,
+    'Modelo': u.modelo,
+    'Color': u.color || '',
+    'Producto': u.producto,
+    'Canal Ingreso': u.canalIngreso || '',
+    'Tipo Ingreso': u.tipoIngreso || '',
+    'Estado': u.estado,
+    'Reparada': u.reparada === true ? 'Sí' : u.reparada === false ? 'No' : '',
+    'Grupo': u.grupo || '',
+    'Total Unidades': totalUnidades,
+  }));
+
+  // addRows handles batching internally
+  await sheet.addRows(rows);
+};
+
+const ensureAgenciasSheet = async () => {
+  const doc = await getDespachoSpreadsheet();
+  const normalized = normalizeHeader(AGENCIES_SHEET_TITLE);
+  let sheet = doc.sheetsByIndex.find((s) => normalizeHeader(s.title) === normalized);
+  if (!sheet) {
+    sheet = await doc.addSheet({ title: AGENCIES_SHEET_TITLE });
+    await sheet.setHeaderRow(['Agencia', 'Activa']);
+  }
+  return sheet;
+};
+
+export const getDespachoAgencias = async (): Promise<string[]> => {
+  const sheet = await ensureAgenciasSheet();
+  await sheet.loadHeaderRow();
+  const rows = await sheet.getRows();
+  return rows
+    .map((row: any) => ({
+      name: String(row.get?.('Agencia') ?? row['Agencia'] ?? '').trim(),
+      activa: String(row.get?.('Activa') ?? 'Sí').toUpperCase(),
+    }))
+    .filter(({ name, activa }) => name && activa !== 'NO')
+    .map(({ name }) => name);
+};

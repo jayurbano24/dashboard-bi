@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
+import Link from 'next/link';
+import * as XLSX from 'xlsx';
 import {
   Card,
   DonutChart,
@@ -117,6 +119,214 @@ const CLAIM_TREND_DATA = [
   { month: 'Abr', Aceptados: 130, Rechazados: 8 },
 ];
 
+const CLAIM_MVP_FAULT_MAP = [
+  { source: 'No enciende', ispCode: 'MP00FUN0106', description: 'Power on failure', category: 'Power' },
+  { source: 'Power on', ispCode: 'MP00FUN0106', description: 'Power on failure', category: 'Power' },
+  { source: 'Carga', ispCode: 'MP00FUN1801', description: 'Charging fault', category: 'Power' },
+  { source: 'Charging', ispCode: 'MP00FUN1801', description: 'Charging fault', category: 'Power' },
+  { source: 'Touch', ispCode: 'MP00FUN1101', description: 'Touch screen failure', category: 'Display' },
+  { source: 'Pantalla', ispCode: 'MP00FUN1101', description: 'Touch screen failure', category: 'Display' },
+  { source: 'Imagen', ispCode: 'PA00FUN0401', description: 'Display blurred/abnormal', category: 'Display' },
+  { source: 'Display', ispCode: 'PA00FUN0401', description: 'Display blurred/abnormal', category: 'Display' },
+  { source: 'Audio', ispCode: 'MP00FUN0503', description: 'Speaker no voice', category: 'Audio' },
+  { source: 'Speaker', ispCode: 'MP00FUN0503', description: 'Speaker no voice', category: 'Audio' },
+];
+
+const CLAIM_ISP_SC_CODE = 'GTM00010';
+const CLAIM_SERVICE_CENTER_CODE = 'GT-TCW-MSC-Guatemala';
+const CLAIM_DEFAULT_CUSTOMER_EMAIL = 'recepcion_gt@mi.com';
+const CLAIM_MAINBOARD_KEYWORDS = ['MAINBOARD', 'MOTHERBOARD', 'BOARD', 'PCBA', 'PLACA', 'TARJETA MADRE'];
+
+const XIAOMI_CLASSIFICATION_PROMPTS = {
+  base: [
+    'Eres un sistema de clasificación técnica para dispositivos Xiaomi (teléfonos y tablets).',
+    '',
+    'Tu función es únicamente:',
+    '- Analizar el texto del síntoma',
+    '- Clasificar la falla',
+    '- Generar un objeto JSON estructurado',
+    '',
+    'IMPORTANTE:',
+    '- NO debes ejecutar acciones reales',
+    '- NO debes conectarte a sistemas externos',
+    '- NO debes modificar bases de datos',
+    '- NO debes asumir procesos físicos de reparación',
+    '- NO debes inventar información no presente',
+    '',
+    'Solo debes devolver un JSON con la clasificación basada en patrones definidos.',
+    '',
+    'Si no tienes suficiente información:',
+    '- devuelve "unknown" en los campos correspondientes',
+    '',
+    'Tu salida debe ser SOLO JSON válido, sin explicaciones adicionales.',
+  ].join('\n'),
+  business: [
+    'Eres un motor de traducción técnica entre Orderry y el template de Xiaomi.',
+    '',
+    'Recibes descripciones de fallas en texto libre provenientes de un sistema de órdenes de servicio.',
+    '',
+    'Tu tarea es:',
+    '- Normalizar el texto',
+    '- Clasificar la falla en categorías técnicas (Power, Display, Charging, Audio, Board)',
+    '- Asignar un fault_code basado en patrones conocidos',
+    '- Sugerir un part_code SOLO si hay coincidencia clara con el modelo',
+    '',
+    'RESTRICCIONES CRÍTICAS:',
+    '- NO ejecutar acciones',
+    '- NO simular reparaciones',
+    '- NO interactuar con APIs externas',
+    '- NO generar órdenes de trabajo',
+    '- NO tomar decisiones operativas reales',
+    '',
+    'Este sistema es SOLO de análisis y estructuración de datos.',
+    '',
+    'Salida obligatoria:',
+    '- JSON estructurado',
+    '- Sin texto adicional',
+    '- Sin explicaciones',
+  ].join('\n'),
+  confidence: [
+    'Actúas como un clasificador técnico de fallas para dispositivos Xiaomi.',
+    '',
+    'Debes analizar el síntoma y devolver un JSON estructurado.',
+    '',
+    'Reglas:',
+    '- Si la coincidencia con patrones es alta -> confidence_score > 80%',
+    '- Si es ambigua -> confidence_score entre 50% y 80%',
+    '- Si es incierta -> usar "unknown" y confidence_score < 50%',
+    '',
+    'PROHIBIDO:',
+    '- Ejecutar acciones',
+    '- Asumir reparaciones físicas',
+    '- Generar instrucciones técnicas',
+    '- Inventar códigos o repuestos',
+    '',
+    'Tu rol es únicamente analítico y descriptivo.',
+    '',
+    'Salida:',
+    'Solo JSON válido.',
+  ].join('\n'),
+  production: [
+    'SYSTEM ROLE: Technical Classification Engine (Read-Only Mode)',
+    '',
+    'You are a read-only AI system designed to classify repair symptoms into structured Xiaomi templates.',
+    '',
+    'PERMISSIONS:',
+    '- Read input text',
+    '- Classify based on known patterns',
+    '- Map to predefined codes',
+    '',
+    'RESTRICTIONS:',
+    '- No execution of any action',
+    '- No external API calls',
+    '- No database interaction',
+    '- No automation triggers',
+    '- No assumptions beyond input data',
+    '',
+    'If input is unclear:',
+    'Return fields as "unknown"',
+    '',
+    'OUTPUT FORMAT:',
+    'Strict JSON only',
+    'No explanations',
+    'No additional text',
+    'No comments',
+  ].join('\n'),
+} as const;
+
+const CLAIM_TEMPLATE_CRITICAL_FIELDS = [
+  'Service_Order_Number',
+  'Brand',
+  'Product_Category',
+  'Model',
+  'IMEI_SN',
+  'GoodsID',
+  'Sale_Date',
+  'Repair_Start_Time',
+  'Processing_method_code',
+  'Level_3_malfunction_code',
+  'Spare_Parts_SKU',
+  'ISP_SC_code',
+];
+
+const CLAIM_UPLOAD_TEMPLATE_COLUMNS = [
+  'service_order_status',
+  'Third_service_order_number',
+  'operator_service_order_number',
+  'ISP_SC_code',
+  'service_center_code',
+  'customer_email',
+  'PO_number',
+  'dealer_name',
+  'customer_type',
+  'service_mode',
+  'service_type',
+  'Return_type',
+  'Return_warehouse_type',
+  'service_subtype',
+  'IW_OOW',
+  'Appearance_Damage',
+  'Malfunction_Description',
+  'invoice_number',
+  'invoice_time',
+  'goods_id',
+  'SN_Or_IMEI1',
+  'newSN',
+  'new_IMEI',
+  'Is_user_damange',
+  'create_time',
+  'SC_express_receipt_time',
+  'actual_visit_time',
+  'repair_start_time',
+  'parts_apply_time',
+  'parts_arrive_time',
+  'material_shortage_time',
+  'repair_finish_time',
+  'deliver_back_to_user_time',
+  'close_time',
+  'receive_AWB',
+  'delivery_AWB',
+  'Level_3_malfunction_code',
+  'processing_method_code',
+  'Activity_Project',
+  'remark',
+  'defect_description',
+  'Goodid',
+  'B2B',
+  'old_PN1',
+  'old_SN1',
+  'old_IMEI1',
+  'new_PN1',
+  'new_SN1',
+  'new_IMEI1',
+  'old_PN2',
+  'old_SN2',
+  'old_IMEI2',
+  'new_PN2',
+  'new_SN2',
+  'new_IMEI2',
+  'old_PN3',
+  'old_SN3',
+  'old_IMEI3',
+  'new_PN3',
+  'new_SN3',
+  'new_IMEI3',
+  'old_PN4',
+  'new_PN4',
+  'old_PN5',
+  'new_PN5',
+  'old_PN6',
+  'new_PN6',
+  'old_PN7',
+  'new_PN7',
+  'old_PN8',
+  'new_PN8',
+  'old_PN9',
+  'new_PN9',
+  'old_PN10',
+  'new_PN10',
+] as const;
+
 const AGING_DATA = [
   { range: '0-2 días', count: 85 },
   { range: '3-5 días', count: 42 },
@@ -129,7 +339,14 @@ const FUNNEL_DATA = [
   { stage: 'WIP', count: 170, color: 'amber' },
   { stage: 'Diagnóstico', count: 180, color: 'blue' },
   { stage: 'Reparación', count: 150, color: 'indigo' },
+  { stage: 'Esp. Aprobación', count: 18, color: 'amber' },
+  { stage: 'Swaps PCBA', count: 12, color: 'amber' },
+  { stage: 'Escalada NC', count: 8, color: 'amber' },
+  { stage: 'Pres. Rechazado', count: 6, color: 'amber' },
+  { stage: 'Esp. Partes', count: 14, color: 'amber' },
+  { stage: 'Esc. Life-One', count: 5, color: 'amber' },
   { stage: 'QA', count: 140, color: 'emerald' },
+  { stage: 'Nota de Crédito', count: 24, color: 'rose' },
   { stage: 'Entrega', count: 130, color: 'cyan' },
 ];
 
@@ -449,6 +666,56 @@ const normalizeText = (value: string | null | undefined) => {
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase();
+};
+
+const extractCustomerEmailForClaim = (order: Record<string, any>) => {
+  const candidates = [
+    order?.client?.email,
+    order?.customer?.email,
+    order?.email,
+    order?.custom_fields?.customer_email,
+    order?.custom_fields?.correo,
+    order?.custom_fields?.correo_electronico,
+    order?.custom_fields?.email_cliente,
+  ];
+
+  const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    const hit = candidate.match(emailRegex);
+    if (hit) return hit[0];
+  }
+
+  return CLAIM_DEFAULT_CUSTOMER_EMAIL;
+};
+
+const extractMainboardImeiFromOrder = (order: Record<string, any>) => {
+  const customFields = order?.custom_fields;
+  if (!customFields || typeof customFields !== 'object') return '';
+
+  const entries = Object.entries(customFields);
+  const target = entries.find(([key, value]) => {
+    if (typeof value !== 'string' || !value.trim()) return false;
+    const keyNorm = normalizeText(String(key));
+    return keyNorm.includes('IMEI') && (keyNorm.includes('NEW') || keyNorm.includes('NUEVO'));
+  });
+
+  if (!target || typeof target[1] !== 'string') return '';
+
+  const digits = target[1].replace(/\D/g, '');
+  if (digits.length < 14) return '';
+  return digits.slice(0, 15);
+};
+
+const inferDamageFlagsFromOrder = (order: Record<string, any>) => {
+  const evidence = normalizeText(`${order?.engineer_notes || ''} ${order?.manager_notes || ''} ${order?.description || ''}`);
+  const positiveMarkers = ['USER DAMAGE: YES', 'DANO USUARIO: SI', 'DANO USUARIO SI', 'DANO ESTETICO: SI', 'APPEARANCE DAMAGE: YES'];
+  const damaged = positiveMarkers.some((marker) => evidence.includes(marker));
+
+  return {
+    appearanceDamage: damaged ? 'Yes' : 'No',
+    userDamage: damaged ? 'Yes' : 'No',
+  };
 };
 
 const extractSedeFromOrder = (order: Record<string, any>) => {
@@ -845,13 +1112,43 @@ const getBodegaEventDate = (order: Record<string, any>) => {
 };
 
 const getSlaTargetDays = (order: Record<string, any>) => {
-  if (!order?.created_at || !order?.due_date) return null;
+  if (!order?.created_at) return null;
+
+  const group = normalizeText(extractProductGroupFromOrder(order));
+  const model = normalizeText(order?.asset?.title || order?.name || '');
+  const isPhone =
+    group.includes('SMARTPHONE') ||
+    group.includes('TELEFONO') ||
+    group.includes('MOVIL') ||
+    group.includes('CELULAR') ||
+    group.includes('TABLET') ||
+    group.includes('FEATURE PHONE') ||
+    model.includes('SMARTPHONE') ||
+    model.includes('TELEFONO') ||
+    model.includes('MOVIL') ||
+    model.includes('CELULAR') ||
+    model.includes('TABLET') ||
+    model.includes('FEATURE PHONE');
+
+  if (isPhone) return 2; // Meta especial Móviles/Tablets/Feature Phones: 2 días hábiles
+  return 4;
+};
+
+const getSlaAgingDays = (order: Record<string, any>) => {
+  if (!order?.created_at) return null;
 
   const createdAt = new Date(order.created_at);
-  const dueAt = new Date(order.due_date);
+  const checkDate = new Date(order?.done_at || order?.closed_at || Date.now());
+  if (Number.isNaN(createdAt.getTime()) || Number.isNaN(checkDate.getTime())) return null;
 
-  if (Number.isNaN(createdAt.getTime()) || Number.isNaN(dueAt.getTime())) return null;
-  return Number(Math.max((dueAt.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24), 0).toFixed(1));
+  return getBusinessDaysDiff(createdAt, checkDate);
+};
+
+const isOrderWithinSla = (order: Record<string, any>) => {
+  const agingDays = getSlaAgingDays(order);
+  const targetDays = getSlaTargetDays(order);
+  if (agingDays === null || targetDays === null) return false;
+  return agingDays <= targetDays;
 };
 
 const getPriorityLabel = (order: Record<string, any>) => {
@@ -873,11 +1170,10 @@ const getPriorityLabel = (order: Record<string, any>) => {
 };
 
 const getLateReason = (order: Record<string, any>) => {
-  const dueAt = new Date(order?.due_date || '');
-  if (!order?.due_date || Number.isNaN(dueAt.getTime())) return 'Sin SLA';
-
-  const checkDate = new Date(order?.done_at || order?.closed_at || order?.modified_at || Date.now());
-  if (checkDate.getTime() <= dueAt.getTime()) return 'En SLA';
+  const agingDays = getSlaAgingDays(order);
+  const targetDays = getSlaTargetDays(order);
+  if (agingDays === null || targetDays === null) return 'Sin SLA';
+  if (agingDays <= targetDays) return 'En SLA';
 
   const status = normalizeText(order?.status?.name);
   if (status.includes('APROBACION')) return 'Esperando aprobación';
@@ -888,22 +1184,184 @@ const getLateReason = (order: Record<string, any>) => {
   return 'Atraso operativo';
 };
 
+const getBusinessDaysDiff = (startDate: Date, endDate: Date) => {
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) return 0;
+
+  let businessMs = 0;
+  let cursor = new Date(startDate);
+
+  while (cursor < endDate) {
+    const nextDay = new Date(cursor);
+    nextDay.setHours(24, 0, 0, 0);
+
+    const segmentEnd = endDate < nextDay ? endDate : nextDay;
+    const dayOfWeek = cursor.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      businessMs += Math.max(segmentEnd.getTime() - cursor.getTime(), 0);
+    }
+
+    cursor = nextDay;
+  }
+
+  return Number((businessMs / (1000 * 60 * 60 * 24)).toFixed(1));
+};
+
 const getOverdueDays = (order: Record<string, any>) => {
-  if (!order?.due_date) return 0;
+  const agingDays = getSlaAgingDays(order);
+  const targetDays = getSlaTargetDays(order);
+  if (agingDays === null || targetDays === null) return 0;
 
-  const dueAt = new Date(order.due_date);
-  const checkDate = new Date(order?.done_at || order?.closed_at || order?.modified_at || Date.now());
+  return Number(Math.max(agingDays - targetDays, 0).toFixed(1));
+};
 
-  if (Number.isNaN(dueAt.getTime()) || Number.isNaN(checkDate.getTime())) return 0;
+const getHistoryEntryUser = (record: Record<string, any>): string => {
+  // Try every known field shape Orderry may use for who performed the change
+  const raw =
+    record?.employee?.full_name ||
+    record?.user?.full_name ||
+    record?.author?.full_name ||
+    record?.employee?.name ||
+    record?.user?.name ||
+    record?.performed_by?.name ||
+    record?.changed_by?.name ||
+    record?.created_by?.name ||
+    record?.employee_name ||
+    record?.user_name ||
+    record?.performed_by_name ||
+    record?.changed_by_name ||
+    record?.author?.name ||
+    record?.manager?.name ||
+    '';
+  return typeof raw === 'string' ? raw.trim() : '';
+};
 
-  return Number(Math.max((checkDate.getTime() - dueAt.getTime()) / (1000 * 60 * 60 * 24), 0).toFixed(1));
+/**
+ * Returns ALL raw timeline/history entries sorted by time,
+ * including comment/note entries (no status) so we can find comment authors.
+ */
+const getRawTimelineEntries = (order: Record<string, any>) => {
+  const sources = [order?.status_history, order?.history, order?.timeline]
+    .filter((value): value is unknown[] => Array.isArray(value));
+  if (!sources.length) return [] as Array<{ status: string; timestamp: string; user: string; isComment: boolean }>;
+
+  const raw = sources.flat() as Record<string, any>[];
+
+  return raw
+    .map((record) => {
+      const statusText = normalizeText(
+        record?.status?.name || record?.status_name || record?.status || record?.title || ''
+      );
+      const user = getHistoryEntryUser(record);
+      const timestamp: string = record?.timestamp || record?.created_at || record?.date || record?.changed_at || '';
+      // A comment/note entry: has an author but no meaningful status, or type indicates it
+      const isComment =
+        !statusText ||
+        (record?.type === 'note') ||
+        (record?.type === 'comment') ||
+        (record?.event_type === 'note') ||
+        (record?.event_type === 'comment') ||
+        (record?.kind === 'note') ||
+        (record?.kind === 'comment');
+      return { status: statusText, timestamp, user, isComment };
+    })
+    .filter((item) => item.timestamp)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+};
+
+/**
+ * Finds the user who moved an order from QA/Listo INTO the Entrega group.
+ * Strategy:
+ * 1. Scan the raw timeline for the first ENTREGA-group status entry and take its user.
+ * 2. If that entry has no user, look backwards for the nearest comment/note author.
+ * 3. Fallback to extractClosingUserFromOrder.
+ */
+const extractQcToDeliveryUser = (order: Record<string, any>): string => {
+  const entries = getRawTimelineEntries(order);
+
+  const isEntregaStatus = (s: string) =>
+    s.includes('ENTREGA') || s.includes('DEVOLVER') || s.includes('DEVOLUC') ||
+    s.includes('DESPACH') || s.includes('RETIR') || s.includes('CERRAD') || s.includes('FINALIZ');
+
+  const isListoStatus = (s: string) =>
+    s.includes('CONTROL DE CALIDAD') || s.includes('CALIDAD') ||
+    s.includes('NC EN CONTROL') || s.includes('APROBACION RECHAZADO') || s.includes('QA');
+
+  // Find the index of the first ENTREGA-group status change
+  const entregaIdx = entries.findIndex((e) => !e.isComment && isEntregaStatus(e.status));
+  if (entregaIdx === -1) return extractClosingUserFromOrder(order);
+
+  // 1. If the ENTREGA entry itself has a user, use it
+  if (entries[entregaIdx].user) return entries[entregaIdx].user;
+
+  // 2. Look backward from entregaIdx for the nearest comment/note that has a user
+  //    but only within the range after the last Listo status
+  let lastListoIdx = -1;
+  for (let i = 0; i < entregaIdx; i += 1) {
+    if (!entries[i].isComment && isListoStatus(entries[i].status)) lastListoIdx = i;
+  }
+  const searchFrom = Math.max(lastListoIdx, 0);
+  for (let i = entregaIdx - 1; i >= searchFrom; i -= 1) {
+    if (entries[i].user) return entries[i].user;
+  }
+
+  // 3. Any user anywhere in the ENTREGA section (in case QA was skipped)
+  for (let i = entregaIdx; i < entries.length; i += 1) {
+    if (entries[i].user) return entries[i].user;
+  }
+
+  return extractClosingUserFromOrder(order);
+};
+
+/**
+ * Finds the QC user responsible for a case in LISTO before it advances to Entrega.
+ * Priority:
+ * 1) User on the latest LISTO status entry.
+ * 2) Nearest user/comment between LISTO and first Entrega status.
+ * 3) Nearest user before LISTO.
+ * 4) Fallback to QC->Entrega user extractor.
+ */
+const extractQcListoOwnerUser = (order: Record<string, any>): string => {
+  const entries = getRawTimelineEntries(order);
+  if (!entries.length) return extractQcToDeliveryUser(order);
+
+  const isEntregaStatus = (s: string) =>
+    s.includes('ENTREGA') || s.includes('DEVOLVER') || s.includes('DEVOLUC') ||
+    s.includes('DESPACH') || s.includes('RETIR') || s.includes('CERRAD') || s.includes('FINALIZ');
+
+  const isListoStatus = (s: string) =>
+    s.includes('CONTROL DE CALIDAD') || s.includes('CALIDAD') ||
+    s.includes('NC EN CONTROL') || s.includes('APROBACION RECHAZADO') || s.includes('QA');
+
+  let lastListoIdx = -1;
+  for (let i = 0; i < entries.length; i += 1) {
+    if (!entries[i].isComment && isListoStatus(entries[i].status)) lastListoIdx = i;
+  }
+
+  if (lastListoIdx === -1) return extractQcToDeliveryUser(order);
+
+  if (entries[lastListoIdx].user) return entries[lastListoIdx].user;
+
+  const entregaIdx = entries.findIndex((e, idx) => idx > lastListoIdx && !e.isComment && isEntregaStatus(e.status));
+  const searchForwardLimit = entregaIdx === -1 ? entries.length : entregaIdx;
+
+  for (let i = lastListoIdx + 1; i < searchForwardLimit; i += 1) {
+    if (entries[i].user) return entries[i].user;
+  }
+
+  for (let i = lastListoIdx - 1; i >= 0; i -= 1) {
+    if (entries[i].user) return entries[i].user;
+  }
+
+  return extractQcToDeliveryUser(order);
 };
 
 const getOrderHistoryEntries = (order: Record<string, any>) => {
-  const sources = [order?.status_history, order?.history, order?.timeline];
-  const raw = sources.find((value) => Array.isArray(value));
+  const sources = [order?.status_history, order?.history, order?.timeline]
+    .filter((value): value is unknown[] => Array.isArray(value));
 
-  if (!Array.isArray(raw)) return [] as Array<{ status: string; timestamp: string }>;
+  if (!sources.length) return [] as Array<{ status: string; timestamp: string; user: string }>;
+
+  const raw = sources.flat() as Record<string, any>[];
 
   return raw
     .map((entry) => {
@@ -911,6 +1369,7 @@ const getOrderHistoryEntries = (order: Record<string, any>) => {
       return {
         status: normalizeText(record?.status?.name || record?.status_name || record?.status || record?.title || ''),
         timestamp: record?.timestamp || record?.created_at || record?.date || record?.changed_at,
+        user: getHistoryEntryUser(record),
       };
     })
     .filter((item) => item.status && typeof item.timestamp === 'string')
@@ -944,6 +1403,38 @@ const getStageDurations = (order: Record<string, any>) => {
     reparacion: Number((totals.reparacion / 24).toFixed(1)),
     qa: Number((totals.qa / 24).toFixed(1)),
   };
+};
+
+const QA_LISTO_STATUS_MARKERS = [
+  'CONTROL DE CALIDAD',
+  'N C EN CONTROL DE CALIDAD',
+  'NC EN CONTROL DE CALIDAD',
+  'APROBACION RECHAZADO',
+];
+
+const QA_PREVIOUS_STAGE_MARKERS = [
+  'ORDEN CREADA',
+  'PENDIENTE DE RECOLECCION',
+  'EN TRANSITO A CSA',
+  'VALIDACION SAF',
+  'MANTENIMIENTO',
+  'TEST',
+  'EN DIAGNOSTICO',
+  'EN REPARACION',
+  'REPARADO',
+  'VALIDACION DOA',
+  'VALIDACION DAP',
+  'ESPERANDO APROBACION',
+  'SWAPS PCBA',
+  'ESCALADA PARA NC',
+  'PRESUPUESTO RECHAZADO',
+  'ESPERANDO PARTES',
+  'ESCALADO LIFE ONE',
+  'ESCALADO LIFEONE',
+];
+
+const statusMatchesAnyMarker = (status: string, markers: string[]) => {
+  return markers.some((marker) => status.includes(marker));
 };
 
 const getPartsCost = (order: Record<string, any>) => {
@@ -1068,7 +1559,7 @@ const isWithinSelectedRange = (dateValue: string | null | undefined, range: Date
 };
 
 const isQaStatus = (statusName: string) => {
-  return statusName.includes('CALIDAD') || statusName.includes('VALIDACION') || statusName.includes('QA');
+  return statusName.includes('CALIDAD') || statusName.includes(' QA') || statusName === 'QA' || statusName.includes('CONTROL DE CALIDAD');
 };
 
 const isTechnicianNotRepairedStatus = (statusName: string) => {
@@ -1106,6 +1597,7 @@ const isNoteCreditCase = (order: Record<string, any>) => {
     paddedServicesText.includes(' NC ') ||
     statusName.includes('NOTA DE CREDITO') ||
     statusName.includes('ESCALADA PARA NC') ||
+    statusName.includes('PRESUPUESTO RECHAZADO') ||
     statusName.includes('CREDITO') ||
     paddedStatusText.includes(' NC ') ||
     notesText.includes('NOTA DE CREDITO')
@@ -1202,6 +1694,43 @@ const isDispatchStatus = (order: Record<string, any>) => {
   );
 };
 
+const isWipEligibleOrder = (order: Record<string, any>) => {
+  return !isDispatchStatus(order) && !isNoteCreditCase(order);
+};
+
+const getOperationalFunnelStage = (order: Record<string, any>) => {
+  const status = normalizeText(order?.status?.name);
+
+  if (isDispatchStatus(order)) return 'Entrega';
+
+  // Pendiente sub-stages — checked before isNoteCreditCase to get their own funnel slot
+  if (status.includes('ESPERANDO APROBACION')) return 'Esp. Aprobación';
+  if (status.includes('SWAPS PCBA') || status.includes('SWAPS-PCBA')) return 'Swaps PCBA';
+  if (status.includes('ESCALADA PARA NC')) return 'Escalada NC';
+  if (status.includes('PRESUPUESTO RECHAZADO')) return 'Pres. Rechazado';
+  if (status.includes('ESPERANDO PARTES')) return 'Esp. Partes';
+  if (status.includes('ESCALADO LIFE ONE') || status.includes('ESCALADO LIFEONE') || status.includes('ESCALADO LIFE-ONE')) return 'Esc. Life-One';
+
+  if (isNoteCreditCase(order)) return 'Nota de Crédito';
+  if (isQaStatus(status)) return 'QA';
+
+  // Validación DOA / DAP / SAP → etapa propia
+  if (status.includes('VALIDACION DOA') || status.includes('VALIDACION DAP') || status.includes('VALIDACION SAP') || status.includes('VALIDACION-DOA') || status.includes('VALIDACION-DAP') || status.includes('VALIDACION-SAP')) return 'Validación';
+
+  if (status.includes('DIAGNOSTICO')) return 'Diagnóstico';
+
+  const isRepairLikeStatus =
+    status.includes('REPARACION') ||
+    status.includes('APROBACION') ||
+    status.includes('REPARADO') ||
+    status.includes('MANTENIMIENTO') ||
+    status.includes('MANTENIEMIENTO');
+
+  if (isRepairLikeStatus) return 'Reparación';
+
+  return 'WIP';
+};
+
 const getDispatchEventDate = (order: Record<string, any>) => {
   if (!isDispatchStatus(order)) return null;
   return order?.closed_at || order?.done_at || order?.modified_at || order?.updated_at || null;
@@ -1222,12 +1751,61 @@ const matchesSelectedFlowMoment = (dateValue: string | null | undefined, selecte
 const getOrderProcessingHours = (order: Record<string, any>) => {
   const createdAt = new Date(order?.created_at || Date.now());
   const endAt = new Date(order?.done_at || order?.closed_at || order?.modified_at || Date.now());
-  const diffMs = Math.max(endAt.getTime() - createdAt.getTime(), 0);
-  return Number((diffMs / (1000 * 60 * 60)).toFixed(1));
+
+  if (Number.isNaN(createdAt.getTime()) || Number.isNaN(endAt.getTime()) || endAt <= createdAt) {
+    return 0;
+  }
+
+  // Count only business time (Mon-Fri), excluding Saturdays and Sundays.
+  let businessMs = 0;
+  let cursor = new Date(createdAt);
+
+  while (cursor < endAt) {
+    const nextDay = new Date(cursor);
+    nextDay.setHours(24, 0, 0, 0);
+
+    const segmentEnd = endAt < nextDay ? endAt : nextDay;
+    const dayOfWeek = cursor.getDay();
+
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      businessMs += Math.max(segmentEnd.getTime() - cursor.getTime(), 0);
+    }
+
+    cursor = nextDay;
+  }
+
+  return Number((businessMs / (1000 * 60 * 60)).toFixed(1));
 };
 
 const getOrderProcessingDays = (order: Record<string, any>) => {
   return Number((getOrderProcessingHours(order) / 24).toFixed(1));
+};
+
+/**
+ * TAT E2E real: only for orders with an actual closing date (done_at / closed_at).
+ * Returns null for open orders — they are excluded from the E2E average.
+ */
+const getOrderE2EDays = (order: Record<string, any>): number | null => {
+  const closingDate = order?.done_at || order?.closed_at;
+  if (!closingDate) return null;
+
+  const createdAt = new Date(order?.created_at);
+  const endAt = new Date(closingDate);
+  if (Number.isNaN(createdAt.getTime()) || Number.isNaN(endAt.getTime()) || endAt <= createdAt) return null;
+
+  // Business days only (Mon-Fri)
+  let businessMs = 0;
+  let cursor = new Date(createdAt);
+  while (cursor < endAt) {
+    const nextDay = new Date(cursor);
+    nextDay.setHours(24, 0, 0, 0);
+    const segmentEnd = endAt < nextDay ? endAt : nextDay;
+    if (cursor.getDay() !== 0 && cursor.getDay() !== 6) {
+      businessMs += Math.max(segmentEnd.getTime() - cursor.getTime(), 0);
+    }
+    cursor = nextDay;
+  }
+  return Number((businessMs / (1000 * 60 * 60 * 24)).toFixed(2));
 };
 
 const getRepairMixDate = (order: Record<string, any>) => {
@@ -1254,22 +1832,130 @@ const getWeekBucket = (dateValue: string | null | undefined) => {
   return { value, label };
 };
 
+const formatClaimTemplateDateTime = (value: string | null | undefined) => {
+  if (!value) return '';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const year = date.getFullYear();
+  const hours24 = date.getHours();
+  const amPm = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = String(hours24 % 12 || 12).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `${month}/${day}/${year} ${hours12}:${minutes}:${seconds} ${amPm}`;
+};
+
 const matchesFunnelStage = (order: Record<string, any>, stage: string) => {
   const status = normalizeText(order?.status?.name);
+  const operationalStage = getOperationalFunnelStage(order);
 
   if (stage === 'Creada') return true;
-  if (stage === 'WIP') return !isDispatchStatus(order);
-  if (stage === 'Diagnóstico') return status.includes('DIAGNOSTICO');
-  if (stage === 'Reparación') {
-    return status.includes('REPARACION') || status.includes('PARTES') || status.includes('APROBACION');
-  }
-  if (stage === 'QA') {
-    return isQaStatus(status);
-  }
-  if (stage === 'Entrega') return isDispatchStatus(order);
+  if (stage === 'WIP') return isWipEligibleOrder(order);
+  if (stage === 'Diagnóstico') return operationalStage === 'Diagnóstico';
+  if (stage === 'Reparación') return operationalStage === 'Reparación';
+  if (stage === 'Esp. Aprobación') return operationalStage === 'Esp. Aprobación';
+  if (stage === 'Swaps PCBA') return operationalStage === 'Swaps PCBA';
+  if (stage === 'Escalada NC') return operationalStage === 'Escalada NC';
+  if (stage === 'Pres. Rechazado') return operationalStage === 'Pres. Rechazado';
+  if (stage === 'Esp. Partes') return operationalStage === 'Esp. Partes';
+  if (stage === 'Esc. Life-One') return operationalStage === 'Esc. Life-One';
+  if (stage === 'QA') return operationalStage === 'QA';
+  if (stage === 'Nota de Crédito') return operationalStage === 'Nota de Crédito';
+  if (stage === 'Entrega') return operationalStage === 'Entrega';
 
   return false;
 };
+
+// ─── MÓDULO DE BONO TÉCNICO ───────────────────────────────────────────────────
+
+type BonusProductLine = 'MOVILES' | 'ASPIRADORAS' | 'SCOOTER' | 'BLACK AND DECKER';
+
+/** Peso: fracción con la que cada nivel pondera la producción hacia la meta.
+ *  L2 = 0.60  →  mayor complejidad / valor de pieza
+ *  L1 = 0.25  →  nivel software
+ *  L0 = 0.15  →  diagnóstico / NC, no genera bono
+ */
+const BONUS_METRICS_CONFIG: {
+  line: BonusProductLine;
+  dailyQuota: number;
+  pesoL0: number;
+  pesoL1: number;
+  pesoL2: number;
+  rates: {
+    tecnico: { l1: number; l2: number };
+    cq:      { l1: number; l2: number };
+    backoffice: { l1: number; l2: number };
+    bodega:  { l1: number; l2: number };
+  };
+}[] = [
+  {
+    line: 'MOVILES', dailyQuota: 15, pesoL0: 0.15, pesoL1: 0.25, pesoL2: 0.60,
+    rates: { tecnico: { l1: 3, l2: 5 }, cq: { l1: 2, l2: 2 }, backoffice: { l1: 1, l2: 2 }, bodega: { l1: 0, l2: 0 } },
+  },
+  {
+    line: 'ASPIRADORAS', dailyQuota: 7, pesoL0: 0.15, pesoL1: 0.25, pesoL2: 0.60,
+    rates: { tecnico: { l1: 4, l2: 7 }, cq: { l1: 3, l2: 4 }, backoffice: { l1: 2, l2: 3 }, bodega: { l1: 0, l2: 4 } },
+  },
+  {
+    line: 'SCOOTER', dailyQuota: 5, pesoL0: 0.15, pesoL1: 0.25, pesoL2: 0.60,
+    rates: { tecnico: { l1: 4, l2: 7 }, cq: { l1: 3, l2: 4 }, backoffice: { l1: 2, l2: 3 }, bodega: { l1: 0, l2: 4 } },
+  },
+  {
+    line: 'BLACK AND DECKER', dailyQuota: 3, pesoL0: 0.15, pesoL1: 0.25, pesoL2: 0.60,
+    rates: { tecnico: { l1: 1, l2: 2 }, cq: { l1: 1, l2: 1.5 }, backoffice: { l1: 1, l2: 1.5 }, bodega: { l1: 0, l2: 0 } },
+  },
+];
+
+const classifyBonusRepairLevel = (serviceTexts: string[]): 'L0' | 'L1' | 'L2' | 'Sin clasificar' => {
+  const combined = normalizeText(serviceTexts.join(' '));
+  if (
+    combined.includes('NOTA DE CREDITO') ||
+    combined.includes('VALIDACION DOA') ||
+    combined.includes('VALIDACION DAP')
+  ) return 'L0';
+  if (
+    combined.includes('ACTUALIZACION SW') ||
+    combined.includes('AJUSTES DE PARAMETROS') ||
+    combined.includes('AJUSTE DE PARAMETROS')
+  ) return 'L1';
+  if (
+    combined.includes('CAMBIO COMPLETO') ||
+    combined.includes('CAMBIO DE ') ||
+    combined.includes('REEMPLAZO') ||
+    combined.includes('MAINBOARD') ||
+    combined.includes('MOTHERBOARD') ||
+    combined.includes('PANTALLA') ||
+    combined.includes('MODULO LCD') ||
+    combined.includes('BATERIA') ||
+    combined.includes('MODULO DE')
+  ) return 'L2';
+  return 'Sin clasificar';
+};
+
+const classifyBonusProductLine = (productGroup: string): BonusProductLine | null => {
+  const g = normalizeText(productGroup);
+  // MOVILES: smartphones, teléfonos, tablets, laptops
+  if (
+    g.includes('SMARTPHONE') ||
+    g.includes('TELEFONO') ||
+    g.includes('TABLET') ||
+    g.includes('LAPTOP')
+  ) return 'MOVILES';
+  // ASPIRADORAS: todo tipo de aspiradora y robot aspiradora
+  if (g.includes('ASPIRADORA') || (g.includes('ROBOT') && g.includes('ASPIRADORA'))) return 'ASPIRADORAS';
+  // SCOOTER: scooters eléctricos y e-mobility
+  if (g.includes('SCOOTER') || g.includes('E MOBILITY') || g.includes('EMOBILITY')) return 'SCOOTER';
+  // BLACK AND DECKER: herramientas eléctricas
+  if (g.includes('HERRAMIENTA') || g.includes('TALADRO') || g.includes('BLACK') || g.includes('DECKER')) return 'BLACK AND DECKER';
+  return null;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function DashboardMultimodular() {
   const [selectedSede, setSelectedSede] = useState('ALL');
@@ -1298,8 +1984,13 @@ export default function DashboardMultimodular() {
   const [selectedBodegaModel, setSelectedBodegaModel] = useState('ALL');
   const [selectedBodegaGroup, setSelectedBodegaGroup] = useState('ALL');
   const [selectedFunnelStage, setSelectedFunnelStage] = useState('Creada');
+  const [qaAgingPage, setQaAgingPage] = useState(0);
+  const QA_AGING_PAGE_SIZE = 15;
+  const [selectedQcFromDate, setSelectedQcFromDate] = useState('');
+  const [selectedQcToDate, setSelectedQcToDate] = useState('');
   const [selectedFunnelDay, setSelectedFunnelDay] = useState('ALL');
   const [selectedSlaSegment, setSelectedSlaSegment] = useState<'En SLA' | 'Fuera SLA'>('Fuera SLA');
+  const [slaEquipFilter, setSlaEquipFilter] = useState('ALL');
   const [availableBrands, setAvailableBrands] = useState<string[]>(FALLBACK_BRANDS);
   const [availableTechnicians, setAvailableTechnicians] = useState<string[]>(FALLBACK_TECHNICIANS);
   const [ordersData, setOrdersData] = useState<Record<string, any>[]>([]);
@@ -1314,6 +2005,29 @@ export default function DashboardMultimodular() {
   const [selectedClaimsStatus, setSelectedClaimsStatus] = useState('ALL');
   const [claimsSearch, setClaimsSearch] = useState('');
   const [claimsRegistryLoaded, setClaimsRegistryLoaded] = useState(false);
+  const [selectedClaimGeneratorBrand, setSelectedClaimGeneratorBrand] = useState<'XIAOMI' | 'TCL' | 'ALCATEL'>('XIAOMI');
+
+  // Módulo de Bono Técnico
+  const [selectedBonusDate, setSelectedBonusDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [selectedBonusTechnician, setSelectedBonusTechnician] = useState('ALL');
+  const [selectedBonusLine, setSelectedBonusLine] = useState('ALL');
+
+  // Anotaciones de piezas requeridas (bodega) — persiste en localStorage
+  const [partsNotes, setPartsNotes] = useState<Record<string, string>>(() => {
+    if (typeof window === 'undefined') return {};
+    try { return JSON.parse(localStorage.getItem('parts_notes_v1') || '{}'); } catch { return {}; }
+  });
+  const [editingPartNote, setEditingPartNote] = useState<string | null>(null);
+  const savePartNote = (orderNumber: string, note: string) => {
+    const updated = { ...partsNotes, [orderNumber]: note };
+    setPartsNotes(updated);
+    localStorage.setItem('parts_notes_v1', JSON.stringify(updated));
+  };
+
+  // Piezas reales por orden (fetched desde /api/bodega/parts-demand)
+  type OrderPart = { sku: string; code: string; title: string; quantity: number };
+  const [bodegaOrderProducts, setBodegaOrderProducts] = useState<Record<string, OrderPart[]>>({});
+  const [bodegaPartsLoading, setBodegaPartsLoading] = useState(false);
 
   // Verificar conexión con Orderry API y obtener marcas disponibles
   useEffect(() => {
@@ -1344,6 +2058,25 @@ export default function DashboardMultimodular() {
           setOrdersData(apiOrders);
           setIsConnected(true);
           setConnectionStatus(`API Orderry v2: Conectado · ${apiOrders.length} órdenes`);
+
+          // Fetch piezas reales para órdenes bloqueadas (Esperando Partes + Escalada NC)
+          const blockedIds = apiOrders
+            .filter((o: Record<string, any>) => {
+              const s = (o?.status?.name || '').toUpperCase().replace(/[ÁÀÄÂ]/g,'A').replace(/[ÉÈËÊ]/g,'E').replace(/[ÍÌÏÎ]/g,'I').replace(/[ÓÒÖÔ]/g,'O').replace(/[ÚÙÜÛ]/g,'U');
+              return s.includes('ESPERANDO PARTES') || (s.includes('ESCALADA') && (s.includes('NC') || s.includes('NOTA') || s.includes('CREDITO')));
+            })
+            .map((o: Record<string, any>) => String(o.id));
+
+          if (blockedIds.length > 0) {
+            setBodegaPartsLoading(true);
+            fetch(`/api/bodega/parts-demand?order_ids=${blockedIds.join(',')}`, { cache: 'no-store' })
+              .then((r) => r.json())
+              .then((d) => {
+                if (d?.orderProducts) setBodegaOrderProducts(d.orderProducts);
+              })
+              .catch(() => {})
+              .finally(() => setBodegaPartsLoading(false));
+          }
         } else {
           setIsConnected(false);
           setOrdersData([]);
@@ -1582,21 +2315,24 @@ export default function DashboardMultimodular() {
   const complianceMetrics = useMemo(() => {
     if (hasLiveData) {
       const total = filteredOrders.length;
-      const totalDays = filteredOrders.reduce((sum, order) => sum + getOrderProcessingDays(order), 0);
-      const backlog = filteredOrders.filter((order) => !isDispatchStatus(order)).length;
-      const slaMet = filteredOrders.filter((order) => {
-        if (!order?.due_date) return false;
-        const dueDate = new Date(order.due_date);
-        const checkDate = new Date(order?.done_at || order?.closed_at || order?.modified_at || Date.now());
-        return checkDate.getTime() <= dueDate.getTime();
-      }).length;
+
+      // TAT E2E: only orders with a real closing date (entry → exit, no open orders)
+      const closedWithDates = filteredOrders
+        .map((order) => getOrderE2EDays(order))
+        .filter((d): d is number => d !== null);
+      const avgE2E = closedWithDates.length
+        ? (closedWithDates.reduce((s, d) => s + d, 0) / closedWithDates.length).toFixed(1)
+        : '0.0';
+
+      const backlog = filteredOrders.filter((order) => isWipEligibleOrder(order)).length;
+      const slaMet = filteredOrders.filter((order) => isOrderWithinSla(order)).length;
       const accepted = filteredOrders.filter((order) => {
         const status = normalizeText(order?.status?.name);
         return !status.includes('RECHAZ') && !status.includes('NOTA DE CREDITO');
       }).length;
 
       return {
-        tat: `${total ? (totalDays / total).toFixed(1) : '0.0'} días`,
+        tat: `${avgE2E} días`,
         sla: `${total ? Math.round((slaMet / total) * 100) : 0}%`,
         backlog,
         bounce: `${serialBounceSummary.kpiRate.toFixed(2)}%`,
@@ -1613,6 +2349,33 @@ export default function DashboardMultimodular() {
 
     return byDate[selectedDateRange];
   }, [hasLiveData, filteredOrders, selectedDateRange, serialBounceSummary]);
+
+  /** TAT especial para Móviles (Smartphones / Teléfonos Celulares) — meta: 2 días hábiles */
+  const TAT_MOVILES_TARGET = 2;
+  const tatMovilesMetric = useMemo(() => {
+    if (!hasLiveData) return { avg: null as number | null, total: 0, onTime: 0, late: 0, pct: 0 };
+
+    const mobileOrders = filteredOrders.filter((order) => {
+      const group = normalizeText(extractProductGroupFromOrder(order));
+      const model = normalizeText(order?.asset?.title || order?.name || '');
+      return (
+        group.includes('SMARTPHONE') || group.includes('TELEFONO') || group.includes('MOVIL') || group.includes('CELULAR') || group.includes('TABLET') || group.includes('FEATURE PHONE') ||
+        model.includes('SMARTPHONE') || model.includes('TELEFONO') || model.includes('MOVIL') || model.includes('CELULAR') || model.includes('TABLET') || model.includes('FEATURE PHONE')
+      );
+    });
+
+    const closedDays = mobileOrders
+      .map((order) => getOrderE2EDays(order))
+      .filter((d): d is number => d !== null);
+
+    const total = closedDays.length;
+    const onTime = closedDays.filter((d) => d <= TAT_MOVILES_TARGET).length;
+    const late = total - onTime;
+    const avg = total ? Number((closedDays.reduce((s, d) => s + d, 0) / total).toFixed(2)) : null;
+    const pct = total ? Math.round((onTime / total) * 100) : 0;
+
+    return { avg, total, onTime, late, pct };
+  }, [hasLiveData, filteredOrders]);
 
   // Filtros dinámicos simulados (el factor cambia los números visualmente)
   const filterFactor = useMemo(() => {
@@ -1790,8 +2553,9 @@ export default function DashboardMultimodular() {
   }, [hasLiveData, filteredOrders, weeklyFlowData]);
 
   const totalWip = useMemo(() => {
+    if (hasLiveData) return filteredOrders.filter((order) => isWipEligibleOrder(order)).length;
     return Math.max(totalIngresos - totalDespachos, 0);
-  }, [totalIngresos, totalDespachos]);
+  }, [hasLiveData, filteredOrders, totalIngresos, totalDespachos]);
 
   const dispatchCompliance = useMemo(() => {
     return totalIngresos ? Math.round((totalDespachos / totalIngresos) * 100) : 0;
@@ -1800,10 +2564,10 @@ export default function DashboardMultimodular() {
   const wipStatusBreakdown = useMemo(() => {
     if (hasLiveData) {
       const grouped = filteredOrders
-        .filter((order) => !isDispatchStatus(order))
+        .filter((order) => isWipEligibleOrder(order))
         .reduce((acc, order) => {
-          const status = order?.status?.name || 'Sin estatus';
-          acc[status] = (acc[status] || 0) + 1;
+          const stage = getOperationalFunnelStage(order);
+          acc[stage] = (acc[stage] || 0) + 1;
           return acc;
         }, {} as Record<string, number>);
 
@@ -1827,27 +2591,28 @@ export default function DashboardMultimodular() {
   }, [hasLiveData, filteredOrders, totalWip]);
 
   const slaScopedOrders = useMemo(() => {
-    return filteredOrders.filter((order) => !isDispatchStatus(order) && Boolean(order?.due_date));
+    return filteredOrders.filter((order) => isWipEligibleOrder(order) && Boolean(order?.created_at));
   }, [filteredOrders]);
 
   const overdueSlaOrders = useMemo(() => {
     return filteredOrders
       .filter((order) => {
         const reason = getLateReason(order);
-        return !isDispatchStatus(order) && reason !== 'En SLA' && reason !== 'Sin SLA';
+        return isWipEligibleOrder(order) && reason !== 'En SLA' && reason !== 'Sin SLA';
       })
       .map((order) => ({
         id: String(order?.id || order?.number || 'SIN-ID'),
         number: order?.number || 'Sin número',
         equipment: order?.asset?.title || order?.name || 'Equipo sin nombre',
+        productGroup: extractProductGroupFromOrder(order) || 'Sin clasificar',
         status: order?.status?.name || 'Sin estatus',
-        dueDate: formatDateTime(order?.due_date),
+        dueDate: formatDateTime(order?.created_at),
         overdueDays: getOverdueDays(order),
         technician: extractTechnicianFromOrder(order),
         reason: getLateReason(order),
+        slaTarget: getSlaTargetDays(order) || 0,
       }))
-      .sort((a, b) => b.overdueDays - a.overdueDays)
-      .slice(0, 15);
+      .sort((a, b) => b.overdueDays - a.overdueDays);
   }, [filteredOrders]);
 
   const slaOrderDetails = useMemo(() => {
@@ -1859,14 +2624,42 @@ export default function DashboardMultimodular() {
         id: String(order?.id || order?.number || 'SIN-ID'),
         number: order?.number || 'Sin número',
         equipment: order?.asset?.title || order?.name || 'Equipo sin nombre',
+        productGroup: extractProductGroupFromOrder(order) || 'Sin clasificar',
         status: order?.status?.name || 'Sin estatus',
-        dueDate: formatDateTime(order?.due_date),
+        dueDate: formatDateTime(order?.created_at),
         overdueDays: 0,
         technician: extractTechnicianFromOrder(order),
         reason: 'En SLA',
+        slaTarget: getSlaTargetDays(order) || 0,
       }))
-      .slice(0, 15);
+      .slice(0, 100);
   }, [overdueSlaOrders, selectedSlaSegment, slaScopedOrders]);
+
+  const exportSlaToExcel = () => {
+    const filtered = slaOrderDetails.filter(
+      (item) => slaEquipFilter === 'ALL' || item.productGroup === slaEquipFilter,
+    );
+    const overdueDaysLabel = selectedSlaSegment === 'Fuera SLA' ? 'Días Vencida' : 'Margen SLA (días)';
+    const rows = filtered.map((item) => {
+      const row: Record<string, string | number> = {
+        'Orden': item.number,
+        'Equipo': item.equipment,
+        'Tipo de Producto': item.productGroup,
+        'Técnico': item.technician,
+        'Estado': item.status,
+        'Motivo': item.reason,
+        'Fecha Ingreso': item.dueDate,
+        'Objetivo SLA (días)': item.slaTarget,
+      };
+      row[overdueDaysLabel] = item.overdueDays;
+      return row;
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, selectedSlaSegment === 'Fuera SLA' ? 'SLA Vencidas' : 'En SLA');
+    const filename = `SLA_${selectedSlaSegment.replace(' ', '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(wb, filename);
+  };
 
   const availableRepairMixWeeks = useMemo(() => {
     const weekMap = new Map<string, string>();
@@ -1951,7 +2744,7 @@ export default function DashboardMultimodular() {
   }, [repairMixSourceOrders]);
 
   const repairMixWipCount = useMemo(() => {
-    return repairMixSourceOrders.filter((order) => !isDispatchStatus(order)).length;
+    return repairMixSourceOrders.filter((order) => isWipEligibleOrder(order)).length;
   }, [repairMixSourceOrders]);
 
   const filteredRepairMixData = useMemo(() => {
@@ -2064,7 +2857,7 @@ export default function DashboardMultimodular() {
       const buckets = { '0-2 días': 0, '3-5 días': 0, '5-7 días': 0, '+7 días': 0 };
 
       filteredOrders
-        .filter((order) => !isDispatchStatus(order))
+        .filter((order) => isWipEligibleOrder(order))
         .forEach((order) => {
           const createdAt = new Date(order?.created_at || Date.now());
           const diffDays = Math.floor((Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24));
@@ -2110,30 +2903,45 @@ export default function DashboardMultimodular() {
 
   const filteredFunnelData = useMemo(() => {
     if (hasLiveData) {
-      const wip = funnelSourceOrders.filter((order) => !isDispatchStatus(order)).length;
-      const diagnostico = funnelSourceOrders.filter((order) => normalizeText(order?.status?.name).includes('DIAGNOSTICO')).length;
-      const reparacion = funnelSourceOrders.filter((order) => {
-        const status = normalizeText(order?.status?.name);
-        return status.includes('REPARACION') || status.includes('PARTES') || status.includes('APROBACION');
-      }).length;
-      const qa = funnelSourceOrders.filter((order) => {
-        const status = normalizeText(order?.status?.name);
-        return status.includes('CALIDAD') || status.includes('VALIDACION') || status.includes('QA');
-      }).length;
-      const entregas = funnelSourceOrders.filter((order) => isDispatchStatus(order)).length;
+      const byStage = (s: string) => funnelSourceOrders.filter((order) => getOperationalFunnelStage(order) === s).length;
 
       return [
         { stage: 'Creada', count: funnelSourceOrders.length, color: 'slate' },
-        { stage: 'WIP', count: wip, color: 'amber' },
-        { stage: 'Diagnóstico', count: diagnostico, color: 'blue' },
-        { stage: 'Reparación', count: reparacion, color: 'indigo' },
-        { stage: 'QA', count: qa, color: 'emerald' },
-        { stage: 'Entrega', count: entregas, color: 'cyan' },
+        { stage: 'WIP', count: funnelSourceOrders.filter((order) => isWipEligibleOrder(order)).length, color: 'amber' },
+        { stage: 'Diagnóstico', count: byStage('Diagnóstico'), color: 'blue' },
+        { stage: 'Reparación', count: byStage('Reparación'), color: 'indigo' },
+        { stage: 'Esp. Aprobación', count: byStage('Esp. Aprobación'), color: 'amber' },
+        { stage: 'Swaps PCBA', count: byStage('Swaps PCBA'), color: 'amber' },
+        { stage: 'Escalada NC', count: byStage('Escalada NC'), color: 'amber' },
+        { stage: 'Pres. Rechazado', count: byStage('Pres. Rechazado'), color: 'amber' },
+        { stage: 'Esp. Partes', count: byStage('Esp. Partes'), color: 'amber' },
+        { stage: 'Esc. Life-One', count: byStage('Esc. Life-One'), color: 'amber' },
+        { stage: 'Validación', count: byStage('Validación'), color: 'violet' },
+        { stage: 'QA', count: byStage('QA'), color: 'emerald' },
+        { stage: 'Nota de Crédito', count: byStage('Nota de Crédito'), color: 'rose' },
+        { stage: 'Entrega', count: byStage('Entrega'), color: 'cyan' },
       ];
     }
 
     return FUNNEL_DATA.map((item) => ({ ...item, count: Math.max(1, Math.round(item.count * filterFactor)) }));
   }, [hasLiveData, funnelSourceOrders, filterFactor]);
+
+  const funnelStageStatusMap = useMemo(() => {
+    if (!hasLiveData) return {} as Record<string, string[]>;
+    const map: Record<string, Set<string>> = {};
+    funnelSourceOrders.forEach((order) => {
+      const stage = getOperationalFunnelStage(order);
+      const statusName: string = order?.status?.name || 'Sin estatus';
+      if (!map[stage]) map[stage] = new Set();
+      map[stage].add(statusName);
+    });
+    // Also include 'Creada' = all orders
+    const allStatuses = new Set(funnelSourceOrders.map((o) => o?.status?.name || 'Sin estatus'));
+    map['Creada'] = allStatuses;
+    const result: Record<string, string[]> = {};
+    Object.entries(map).forEach(([stage, set]) => { result[stage] = Array.from(set).sort(); });
+    return result;
+  }, [hasLiveData, funnelSourceOrders]);
 
   const funnelEquipmentList = useMemo(() => {
     if (!funnelSourceOrders.length) return [];
@@ -2351,13 +3159,8 @@ export default function DashboardMultimodular() {
       const noReparado = relatedOrders.filter((order) => isTechnicianNotRepairedStatus(normalizeText(order?.status?.name))).length;
       const controlesQc = relatedOrders.filter((order) => isQaStatus(normalizeText(order?.status?.name))).length;
       const cerrada = closedOrders.length;
-      const wip = relatedOrders.filter((order) => !isDispatchStatus(order)).length;
-      const slaMet = relatedOrders.filter((order) => {
-        if (!order?.due_date) return false;
-        const dueDate = new Date(order.due_date);
-        const checkDate = new Date(order?.done_at || order?.closed_at || order?.modified_at || Date.now());
-        return checkDate.getTime() <= dueDate.getTime();
-      }).length;
+      const wip = relatedOrders.filter((order) => isWipEligibleOrder(order)).length;
+      const slaMet = relatedOrders.filter((order) => isOrderWithinSla(order)).length;
       const creatorOwner = Object.entries(
         relatedOrders.reduce((acc, order) => {
           const creator = extractCreatorFromOrder(order);
@@ -2871,11 +3674,397 @@ export default function DashboardMultimodular() {
   const tatByTechnicianCards = useMemo(() => {
     return technicianRankingData.slice(0, 4).map((item) => ({
       name: item.name,
-      tat: `${item.hours}h`,
+      tat: `${(item.hours / 24).toFixed(1)} días`,
       repaired: item.repairs + item.qc,
       sla: item.ftf,
     }));
   }, [technicianRankingData]);
+
+  const qaOperationalMetrics = useMemo(() => {
+    if (!hasLiveData) {
+      return {
+        qaFailureRate: 0,
+        rejectedCount: 0,
+        qaOrdersCount: 0,
+        avgQaDays: 0,
+        avgQaHours: 0,
+        medianQaDays: 0,
+        p90QaDays: 0,
+        currentlyInQaCount: 0,
+        historyCoverage: 0,
+        doaRate: 0,
+        weeklyData: QA_RESULT_DATA,
+        rejectionRows: [] as Array<{ number: string; equipment: string; returnedStatus: string; technician: string }>,
+        topQaAgingRows: [] as Array<{ number: string; equipment: string; technician: string; status: string; qaDays: number; enteredAt: string; ongoing: boolean }>,
+        tatDistribution: [] as Array<{ range: string; count: number }>,
+        byTechnicianInQc: [] as Array<{ name: string; total: number; active: number }>,
+      };
+    }
+
+    const weeklyBuckets = new Map<string, { week: string; Aprobados: number; Rechazados: number }>();
+    const rejectionRows: Array<{ number: string; equipment: string; returnedStatus: string; technician: string }> = [];
+    const topQaAgingRows: Array<{ number: string; equipment: string; technician: string; status: string; qaDays: number; enteredAt: string; ongoing: boolean }> = [];
+    const qaDurationSamplesHours: number[] = [];
+
+    let totalQaHours = 0;
+    let qaOrdersCount = 0;
+    let rejectedCount = 0;
+    let doaCount = 0;
+    let currentlyInQaCount = 0;
+    let qaOrdersWithHistory = 0;
+
+    filteredOrders.forEach((order) => {
+      const history = getOrderHistoryEntries(order);
+
+      let qaHoursInListo = 0;
+      let firstQaTimestamp = '';
+      let enteredQaListo = false;
+      let rejectedByReturn = false;
+      let returnStatus = '';
+      let hasQaHistoryEntry = false;
+      const currentStatus = normalizeText(order?.status?.name);
+      const currentlyInQa = statusMatchesAnyMarker(currentStatus, QA_LISTO_STATUS_MARKERS);
+
+      if (currentlyInQa) currentlyInQaCount += 1;
+
+      if (!history.length) {
+        if (currentlyInQa) {
+          enteredQaListo = true;
+          firstQaTimestamp = String(order?.modified_at || order?.updated_at || order?.created_at || '');
+          const startFallback = new Date(firstQaTimestamp);
+          if (!Number.isNaN(startFallback.getTime())) {
+            qaHoursInListo = Math.max((Date.now() - startFallback.getTime()) / (1000 * 60 * 60), 0);
+          }
+        }
+      }
+
+      for (let i = 0; i < history.length; i += 1) {
+        const current = history[i];
+        const currentStatus = current.status;
+        const start = new Date(current.timestamp);
+        const nextTimestamp = history[i + 1]?.timestamp;
+        const fallbackEnd = currentlyInQa
+          ? Date.now()
+          : (order?.done_at || order?.closed_at || order?.modified_at || Date.now());
+        const end = new Date(nextTimestamp || fallbackEnd);
+
+        if (statusMatchesAnyMarker(currentStatus, QA_LISTO_STATUS_MARKERS)) {
+          enteredQaListo = true;
+          hasQaHistoryEntry = true;
+          if (!firstQaTimestamp) firstQaTimestamp = current.timestamp;
+
+          if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+            qaHoursInListo += Math.max((end.getTime() - start.getTime()) / (1000 * 60 * 60), 0);
+          }
+        } else if (enteredQaListo && statusMatchesAnyMarker(currentStatus, QA_PREVIOUS_STAGE_MARKERS)) {
+          rejectedByReturn = true;
+          if (!returnStatus) returnStatus = currentStatus;
+        }
+      }
+
+      if (currentStatus.includes('DOA') || currentStatus.includes('DAP')) {
+        doaCount += 1;
+      }
+
+      if (!enteredQaListo) return;
+
+      if (hasQaHistoryEntry) qaOrdersWithHistory += 1;
+
+      qaOrdersCount += 1;
+      totalQaHours += qaHoursInListo;
+      qaDurationSamplesHours.push(qaHoursInListo);
+
+      topQaAgingRows.push({
+        number: String(order?.number || order?.id || 'Sin número'),
+        equipment: order?.asset?.title || order?.name || 'Equipo sin nombre',
+        technician: extractTechnicianFromOrder(order),
+        status: order?.status?.name || 'Sin estatus',
+        qaDays: Number((qaHoursInListo / 24).toFixed(2)),
+        enteredAt: formatDateTime(firstQaTimestamp || order?.modified_at || order?.updated_at || order?.created_at),
+        ongoing: currentlyInQa,
+      });
+
+      const week = getWeekBucket(firstQaTimestamp || order?.created_at || order?.modified_at || '');
+      const weekKey = week?.value || 'SIN_FECHA';
+      const weekLabel = week?.label || 'Sin semana';
+
+      if (!weeklyBuckets.has(weekKey)) {
+        weeklyBuckets.set(weekKey, { week: weekLabel, Aprobados: 0, Rechazados: 0 });
+      }
+
+      const bucket = weeklyBuckets.get(weekKey)!;
+
+      if (rejectedByReturn) {
+        bucket.Rechazados += 1;
+        rejectedCount += 1;
+
+        rejectionRows.push({
+          number: String(order?.number || order?.id || 'Sin número'),
+          equipment: order?.asset?.title || order?.name || 'Equipo sin nombre',
+          returnedStatus: returnStatus || 'Retorno detectado',
+          technician: extractTechnicianFromOrder(order),
+        });
+      } else {
+        bucket.Aprobados += 1;
+      }
+    });
+
+    const avgQaHours = qaOrdersCount ? totalQaHours / qaOrdersCount : 0;
+    const avgQaDays = avgQaHours / 24;
+    const qaFailureRate = qaOrdersCount ? (rejectedCount / qaOrdersCount) * 100 : 0;
+    const doaRate = filteredOrders.length ? (doaCount / filteredOrders.length) * 100 : 0;
+    const historyCoverage = qaOrdersCount ? (qaOrdersWithHistory / qaOrdersCount) * 100 : 0;
+
+    const sortedDurations = [...qaDurationSamplesHours].sort((a, b) => a - b);
+    const pickPercentile = (values: number[], percentile: number) => {
+      if (!values.length) return 0;
+      const index = Math.min(values.length - 1, Math.max(0, Math.ceil((percentile / 100) * values.length) - 1));
+      return values[index];
+    };
+
+    const medianQaHours = pickPercentile(sortedDurations, 50);
+    const p90QaHours = pickPercentile(sortedDurations, 90);
+
+    const weeklyData = Array.from(weeklyBuckets.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, row]) => row)
+      .slice(-8);
+
+    const allAgingSorted = topQaAgingRows.sort((a, b) => b.qaDays - a.qaDays);
+
+    // Distribución TAT en rangos
+    const tatBuckets = { '< 0.5 días': 0, '0.5 – 1 día': 0, '1 – 2 días': 0, '> 2 días': 0 };
+    allAgingSorted.forEach(({ qaDays }) => {
+      if (qaDays < 0.5) tatBuckets['< 0.5 días'] += 1;
+      else if (qaDays < 1) tatBuckets['0.5 – 1 día'] += 1;
+      else if (qaDays < 2) tatBuckets['1 – 2 días'] += 1;
+      else tatBuckets['> 2 días'] += 1;
+    });
+    const tatDistribution = Object.entries(tatBuckets).map(([range, count]) => ({ range, count }));
+
+    // Conteo por técnico en QC
+    const techMap = new Map<string, { name: string; total: number; active: number }>();
+    allAgingSorted.forEach(({ technician, ongoing }) => {
+      if (!techMap.has(technician)) techMap.set(technician, { name: technician, total: 0, active: 0 });
+      const t = techMap.get(technician)!;
+      t.total += 1;
+      if (ongoing) t.active += 1;
+    });
+    const byTechnicianInQc = Array.from(techMap.values()).sort((a, b) => b.total - a.total);
+
+    return {
+      qaFailureRate: Number(qaFailureRate.toFixed(1)),
+      rejectedCount,
+      qaOrdersCount,
+      avgQaDays: Number(avgQaDays.toFixed(2)),
+      avgQaHours: Number(avgQaHours.toFixed(1)),
+      medianQaDays: Number((medianQaHours / 24).toFixed(2)),
+      p90QaDays: Number((p90QaHours / 24).toFixed(2)),
+      currentlyInQaCount,
+      historyCoverage: Number(historyCoverage.toFixed(1)),
+      doaRate: Number(doaRate.toFixed(1)),
+      weeklyData: weeklyData.length ? weeklyData : QA_RESULT_DATA,
+      rejectionRows: rejectionRows.slice(0, 20),
+      topQaAgingRows: allAgingSorted,
+      tatDistribution,
+      byTechnicianInQc,
+    };
+  }, [hasLiveData, filteredOrders]);
+
+  const qaListoToEntregaMetrics = useMemo(() => {
+    if (!hasLiveData) {
+      return {
+        units: 0,
+        qaTouched: 0,
+        approved: 0,
+        rate: 0,
+        byListoStatus: [
+          { status: 'CONTROL DE CALIDAD', count: 0, current: 0 },
+          { status: 'N.C. EN CONTROL DE CALIDAD', count: 0, current: 0 },
+          { status: 'APROBACION RECHAZADO', count: 0, current: 0 },
+        ],
+        rows: [] as Array<{
+          id: string;
+          number: string;
+          equipment: string;
+          technician: string;
+          listoStatus: string;
+          controlAt: string;
+          approvedAt: string;
+          status: string;
+        }>,
+      };
+    }
+
+    const isInCustomRange = (dateValue: string | null | undefined) => {
+      if (!dateValue) return false;
+      const value = new Date(dateValue);
+      if (Number.isNaN(value.getTime())) return false;
+
+      if (!selectedQcFromDate && !selectedQcToDate) return true;
+
+      const from = selectedQcFromDate ? new Date(`${selectedQcFromDate}T00:00:00`) : null;
+      const to = selectedQcToDate ? new Date(`${selectedQcToDate}T23:59:59.999`) : null;
+
+      if (from && Number.isNaN(from.getTime())) return true;
+      if (to && Number.isNaN(to.getTime())) return true;
+
+      if (from && value < from) return false;
+      if (to && value > to) return false;
+      return true;
+    };
+
+    const isEntregaStatus = (s: string) =>
+      s.includes('ENTREGA') || s.includes('DEVOLVER') || s.includes('DEVOLUC') ||
+      s.includes('DESPACH') || s.includes('RETIR') || s.includes('CERRAD') || s.includes('FINALIZ');
+
+    const isListoStatus = (s: string) =>
+      s.includes('CONTROL DE CALIDAD') || s.includes('CALIDAD') ||
+      s.includes('NC EN CONTROL') || s.includes('APROBACION RECHAZADO') || s.includes('QA');
+
+    const getListoBucket = (status: string) => {
+      if (status.includes('APROBACION RECHAZADO')) return 'APROBACION RECHAZADO';
+      if (status.includes('N C EN CONTROL DE CALIDAD') || status.includes('NC EN CONTROL DE CALIDAD')) return 'N.C. EN CONTROL DE CALIDAD';
+      if (status.includes('CONTROL DE CALIDAD')) return 'CONTROL DE CALIDAD';
+      return null;
+    };
+
+    const scopedOrders = filteredOrders.filter((order) => !isNoteCreditCase(order));
+    const rows: Array<{
+      id: string;
+      number: string;
+      equipment: string;
+      technician: string;
+      listoStatus: string;
+      controlAt: string;
+      approvedAt: string;
+      status: string;
+      sortDate: string;
+    }> = [];
+
+    const listoStatusCounter: Record<string, number> = {
+      'CONTROL DE CALIDAD': 0,
+      'N.C. EN CONTROL DE CALIDAD': 0,
+      'APROBACION RECHAZADO': 0,
+    };
+    const listoCurrentCounter: Record<string, number> = {
+      'CONTROL DE CALIDAD': 0,
+      'N.C. EN CONTROL DE CALIDAD': 0,
+      'APROBACION RECHAZADO': 0,
+    };
+
+    let qaTouched = 0;
+    let approved = 0;
+
+    scopedOrders.forEach((order) => {
+      const entries = getRawTimelineEntries(order);
+      const currentBucket = getListoBucket(normalizeText(order?.status?.name));
+      if (currentBucket) listoCurrentCounter[currentBucket] += 1;
+
+      let controlAt = '';
+      let approvedAt = '';
+      let listoStatus = '—';
+
+      for (let i = 0; i < entries.length; i += 1) {
+        const row = entries[i];
+        if (row.isComment) continue;
+
+        const listoBucket = getListoBucket(row.status);
+        if (!controlAt && isListoStatus(row.status) && isInCustomRange(row.timestamp)) {
+          controlAt = row.timestamp;
+          if (listoBucket) listoStatus = listoBucket;
+        }
+
+        if (!approvedAt && isEntregaStatus(row.status)) {
+          const prevListoEntry = entries
+            .slice(0, i)
+            .reverse()
+            .find((item) => !item.isComment && isListoStatus(item.status));
+          const hasListoBefore = Boolean(prevListoEntry);
+          if (hasListoBefore && isInCustomRange(row.timestamp)) {
+            approvedAt = row.timestamp;
+            const prevBucket = prevListoEntry ? getListoBucket(prevListoEntry.status) : null;
+            if (prevBucket) {
+              listoStatus = prevBucket;
+              listoStatusCounter[prevBucket] += 1;
+            }
+          }
+        }
+      }
+
+      if (controlAt) qaTouched += 1;
+      if (approvedAt) approved += 1;
+
+      // Fallback for partial timelines: infer using current status and closing date.
+      if (!controlAt) {
+        const currentStatus = normalizeText(order?.status?.name);
+        const inferredListo = getListoBucket(currentStatus);
+        const inferredControlAt = order?.modified_at || order?.updated_at || order?.created_at || '';
+        if (inferredListo && isInCustomRange(inferredControlAt)) {
+          controlAt = inferredControlAt;
+          listoStatus = inferredListo;
+          qaTouched += 1;
+        }
+      }
+
+      if (!approvedAt && isDispatchStatus(order)) {
+        const inferredApprovedAt = order?.done_at || order?.closed_at || '';
+        if (controlAt && inferredApprovedAt && isInCustomRange(inferredApprovedAt)) {
+          approvedAt = inferredApprovedAt;
+          approved += 1;
+          if (listoStatus !== '—') listoStatusCounter[listoStatus] += 1;
+        }
+      }
+
+      if (controlAt || approvedAt) {
+        const sortDate = approvedAt || controlAt;
+        rows.push({
+          id: String(order?.id || order?.number || sortDate),
+          number: order?.number || 'Sin número',
+          equipment: order?.asset?.title || order?.name || 'Equipo sin nombre',
+          technician: extractTechnicianFromOrder(order),
+          listoStatus,
+          controlAt: controlAt ? formatDateTime(controlAt) : '—',
+          approvedAt: approvedAt ? formatDateTime(approvedAt) : '—',
+          status: order?.status?.name || 'Sin estatus',
+          sortDate,
+        });
+      }
+    });
+
+    const units = approved;
+    const rate = qaTouched ? Number(((units / qaTouched) * 100).toFixed(1)) : 0;
+
+    const detailRows = rows
+      .sort((a, b) => new Date(b.sortDate).getTime() - new Date(a.sortDate).getTime())
+      .slice(0, 40)
+      .map(({ sortDate, ...rest }) => rest);
+
+    return {
+      units,
+      qaTouched,
+      approved,
+      rate,
+      byListoStatus: [
+        {
+          status: 'CONTROL DE CALIDAD',
+          count: listoStatusCounter['CONTROL DE CALIDAD'],
+          current: listoCurrentCounter['CONTROL DE CALIDAD'],
+        },
+        {
+          status: 'N.C. EN CONTROL DE CALIDAD',
+          count: listoStatusCounter['N.C. EN CONTROL DE CALIDAD'],
+          current: listoCurrentCounter['N.C. EN CONTROL DE CALIDAD'],
+        },
+        {
+          status: 'APROBACION RECHAZADO',
+          count: listoStatusCounter['APROBACION RECHAZADO'],
+          current: listoCurrentCounter['APROBACION RECHAZADO'],
+        },
+      ],
+      rows: detailRows,
+    };
+  }, [hasLiveData, filteredOrders, selectedQcFromDate, selectedQcToDate]);
 
   const technicianProductivitySlaData = useMemo(() => {
     return technicianRankingData.slice(0, 8).map((item) => {
@@ -3096,6 +4285,133 @@ export default function DashboardMultimodular() {
     ];
   }, [hasLiveData, bodegaFilteredOrders]);
 
+  // ── MRP: Plan de Compra Inteligente ─────────────────────────────────────────
+  const mrpData = useMemo(() => {
+    const LEAD_TIME = 21;
+    const BUFFER_PCT = 0.15;
+
+    // Estimar el rango de días de los datos disponibles (mínimo 7, máximo 90)
+    let daySpan = 30;
+    if (hasLiveData && bodegaFilteredOrders.length > 0) {
+      const dates = bodegaFilteredOrders
+        .map((o) => new Date(getBodegaEventDate(o)).getTime())
+        .filter((t) => !isNaN(t));
+      if (dates.length >= 2) {
+        const msSpan = Math.max(...dates) - Math.min(...dates);
+        daySpan = Math.max(7, Math.min(90, Math.round(msSpan / 86400000)));
+      }
+    }
+
+    // ── Demanda real por pieza (SKU de parte, no modelo de equipo) ───────────
+    // Fuente: bodegaOrderProducts (fetched desde /api/bodega/parts-demand)
+    // Agrupa todas las piezas usadas en órdenes bloqueadas → demanda backorder real
+    const partDemandMap = new Map<string, {
+      sku: string; code: string; title: string;
+      backorderUnits: number; backorderOrders: string[];
+    }>();
+
+    Object.entries(bodegaOrderProducts).forEach(([, parts]) => {
+      (parts as OrderPart[]).forEach((part) => {
+        const key = part.code || part.sku;
+        if (!partDemandMap.has(key)) {
+          partDemandMap.set(key, {
+            sku: part.sku, code: part.code, title: part.title,
+            backorderUnits: 0, backorderOrders: [],
+          });
+        }
+        const entry = partDemandMap.get(key)!;
+        entry.backorderUnits += part.quantity;
+        entry.backorderOrders.push(key);
+      });
+    });
+
+    // Si tenemos datos reales de piezas, usar esos; sino, fallback a topSkuRows (modelos)
+    const hasRealParts = partDemandMap.size > 0;
+
+    let rows: Array<{
+      sku: string; code: string; title: string;
+      consumoDiario: number; forecast21d: number;
+      backorder: number; compraSugerida: number;
+      prioridad: 'URGENTE' | 'ALTA' | 'MEDIA' | 'BAJA';
+      isRealPart: boolean;
+    }>;
+
+    if (hasRealParts) {
+      // MRP basado en piezas reales de órdenes bloqueadas
+      rows = Array.from(partDemandMap.values()).map((part) => {
+        // Consumo diario estimado: backorder acumulado ÷ daySpan
+        const consumoDiario = daySpan > 0 ? part.backorderUnits / daySpan : 0;
+        const forecast21d = Math.ceil(consumoDiario * LEAD_TIME);
+        const backorder = part.backorderUnits;
+        const compraSugerida = Math.ceil((forecast21d + backorder) * (1 + BUFFER_PCT));
+
+        let prioridad: 'URGENTE' | 'ALTA' | 'MEDIA' | 'BAJA';
+        if (backorder >= 3) prioridad = 'URGENTE';
+        else if (backorder >= 1) prioridad = 'ALTA';
+        else if (consumoDiario >= 0.3) prioridad = 'MEDIA';
+        else prioridad = 'BAJA';
+
+        return {
+          sku: part.sku, code: part.code, title: part.title,
+          consumoDiario: Number(consumoDiario.toFixed(2)),
+          forecast21d, backorder, compraSugerida, prioridad, isRealPart: true,
+        };
+      }).sort((a, b) => b.backorder - a.backorder || b.consumoDiario - a.consumoDiario);
+    } else {
+      // Fallback: usar topSkuRows (modelos de equipo) mientras no haya datos de piezas
+      rows = bodegaTrackingSummary.topSkuRows.map((sku) => {
+        const consumoDiario = daySpan > 0 ? sku.dispatched / daySpan : 0;
+        const forecast21d = Math.ceil(consumoDiario * LEAD_TIME);
+        const backorder = sku.waiting;
+        const compraSugerida = Math.ceil((forecast21d + backorder) * (1 + BUFFER_PCT));
+
+        let prioridad: 'URGENTE' | 'ALTA' | 'MEDIA' | 'BAJA';
+        if (backorder > 0 && sku.dispatched === 0) prioridad = 'URGENTE';
+        else if (backorder > 0) prioridad = 'ALTA';
+        else if (consumoDiario >= 0.3) prioridad = 'MEDIA';
+        else prioridad = 'BAJA';
+
+        return {
+          sku: sku.sku, code: '', title: sku.sku,
+          consumoDiario: Number(consumoDiario.toFixed(2)),
+          forecast21d, backorder, compraSugerida, prioridad, isRealPart: false,
+        };
+      });
+    }
+
+    const urgentes = rows.filter((r) => r.prioridad === 'URGENTE' || r.prioridad === 'ALTA');
+    const totalForecast = rows.reduce((s, r) => s + r.forecast21d, 0);
+    const totalBackorder = rows.reduce((s, r) => s + r.backorder, 0);
+
+    return { rows, urgentes, totalForecast, totalBackorder, daySpan, hasRealParts };
+  }, [hasLiveData, bodegaTrackingSummary, bodegaFilteredOrders, bodegaOrderProducts]);
+
+  const blockedOrdersDetail = useMemo(() => {
+    if (!hasLiveData) return { esperandoPartes: [], escaladaNc: [] };
+    const today = new Date();
+    const toRow = (order: Record<string, any>) => {
+      const model = order?.asset?.title || `${order?.asset?.brand || ''} ${order?.asset?.model || ''}`.trim() || 'Sin modelo';
+      const malfunction = (order?.malfunction || '—').trim();
+      const orderNumber = order?.number || '—';
+      const orderId = String(order?.id || '');
+      const ref = order?.modified_at || order?.created_at;
+      const daysWaiting = ref ? Math.floor((today.getTime() - new Date(ref).getTime()) / 86400000) : 0;
+      return { orderNumber, orderId, model, malfunction, daysWaiting };
+    };
+    const esperandoPartes = bodegaFilteredOrders
+      .filter((order) => normalizeText(order?.status?.name || '').includes('ESPERANDO PARTES'))
+      .map(toRow)
+      .sort((a, b) => b.daysWaiting - a.daysWaiting);
+    const escaladaNc = bodegaFilteredOrders
+      .filter((order) => {
+        const s = normalizeText(order?.status?.name || '');
+        return s.includes('ESCALADA') && (s.includes('NC') || s.includes('NOTA') || s.includes('CREDITO'));
+      })
+      .map(toRow)
+      .sort((a, b) => b.daysWaiting - a.daysWaiting);
+    return { esperandoPartes, escaladaNc };
+  }, [hasLiveData, bodegaFilteredOrders]);
+
   const claimsRegistryEntries = useMemo(() => {
     return xiaomiRegistryInput
       .split(/\r?\n/)
@@ -3244,6 +4560,331 @@ export default function DashboardMultimodular() {
       .slice(0, 30);
   }, [claimsValidationBaseRows, selectedClaimsStatus, claimsSearch]);
 
+  const claimsGeneratorRows = useMemo(() => {
+    const normalizedBrand = normalizeText(selectedClaimGeneratorBrand);
+
+    const isWithinCurrentScope = (order: Record<string, any>) => {
+      const referenceDate = order?.closed_at || order?.done_at || order?.modified_at || order?.created_at;
+
+      if (selectedSede !== 'ALL' && extractSedeFromOrder(order) !== selectedSede) return false;
+
+      if (isCustomMonthRangeActive) {
+        return isWithinMonthRange(referenceDate, selectedStartMonth, selectedEndMonth);
+      }
+
+      return isWithinSelectedRange(referenceDate, selectedDateRange);
+    };
+
+    const matchesBrand = (order: Record<string, any>) => {
+      const brand = normalizeText(extractBrandFromOrder(order));
+      if (normalizedBrand === 'ALCATEL') {
+        return brand.includes('ALCATEL');
+      }
+      return brand.includes(normalizedBrand);
+    };
+
+    const inferL3Code = (order: Record<string, any>) => {
+      const diagnosisText = normalizeText(`${order?.malfunction || ''} ${order?.fault || ''} ${order?.problem || ''} ${order?.description || ''} ${order?.engineer_notes || ''}`);
+      const hit = CLAIM_MVP_FAULT_MAP.find((row) => diagnosisText.includes(normalizeText(row.source)));
+      return {
+        code: hit?.ispCode || 'MP099-GEN',
+        description: hit?.description || 'Generic malfunction',
+      };
+    };
+
+    return ordersData
+      .filter((order) => isWithinCurrentScope(order) && matchesBrand(order))
+      .filter((order) => {
+        const historyHasQa = getOrderHistoryEntries(order).some((entry) => isQaStatus(normalizeText(entry.status)));
+        return historyHasQa || isQaStatus(normalizeText(order?.status?.name)) || Boolean(order?.done_at || order?.closed_at || isDispatchStatus(order));
+      })
+      .map((order) => {
+        const identifiers = getClaimIdentifierCandidates(order);
+        const imeiCandidate = identifiers
+          .map((value) => value.replace(/\D/g, ''))
+          .find((digits) => digits.length >= 14 && digits.length <= 17);
+        const imei = imeiCandidate ? imeiCandidate.slice(0, 15) : '';
+
+        const goodsId = [
+          order?.custom_fields?.goods_id,
+          order?.custom_fields?.GoodsID,
+          order?.custom_fields?.f3151083,
+          order?.custom_fields?.f3147565,
+        ].find((value) => typeof value === 'string' && value.trim())?.trim() || '';
+
+        const saleDate = [
+          order?.custom_fields?.sale_date,
+          order?.custom_fields?.fecha_venta,
+          order?.custom_fields?.f3129959,
+          order?.created_at,
+        ].find((value) => typeof value === 'string' && value.trim()) || '';
+
+        const repairStartOriginal = [
+          order?.custom_fields?.repair_start_time,
+          order?.custom_fields?.Repair_Start_Time,
+          order?.custom_fields?.f3130204,
+        ].find((value) => typeof value === 'string' && value.trim()) || '';
+
+        const createdAt = new Date(order?.created_at || '');
+        const generatedRepairStart = !Number.isNaN(createdAt.getTime())
+          ? new Date(createdAt.getTime() + 48 * 60 * 60 * 1000).toISOString()
+          : '';
+        const repairStart = generatedRepairStart || repairStartOriginal;
+        const repairStartDate = repairStart ? new Date(repairStart) : null;
+        const repairFinish = repairStartDate && !Number.isNaN(repairStartDate.getTime())
+          ? new Date(repairStartDate.getTime() + 24 * 60 * 60 * 1000).toISOString()
+          : '';
+
+        const parts = extractProductEntriesFromOrder(order);
+        const hasParts = parts.length > 0 || getPartsCost(order) > 0;
+        const repairContext = normalizeText(`${extractServicesFromOrder(order)} ${parts.map((item) => item.name).join(' | ')} ${order?.description || ''} ${order?.engineer_notes || ''}`);
+        const isMainboardRepair = CLAIM_MAINBOARD_KEYWORDS.some((keyword) => repairContext.includes(keyword));
+        const processingMethodCode = !hasParts ? '3001' : isMainboardRepair ? '5101' : '5001';
+        const l3Match = inferL3Code(order);
+        const l3MalfunctionCode = l3Match.code;
+        const createdAtRaw = String(order?.created_at || '');
+        const saleDateFormatted = formatClaimTemplateDateTime(saleDate);
+        const repairStartFormatted = formatClaimTemplateDateTime(repairStart);
+        const repairFinishFormatted = formatClaimTemplateDateTime(repairFinish);
+        const createdAtFormatted = formatClaimTemplateDateTime(createdAtRaw);
+        const diagnosisText = `${order?.malfunction || ''} ${order?.fault || ''} ${order?.problem || ''} ${order?.description || ''} ${order?.engineer_notes || ''}`.trim();
+        const remark = `${order?.resume || ''} ${order?.manager_notes || ''} ${order?.engineer_notes || ''}`.trim();
+        const serviceType = hasParts ? 'Repair' : 'Inspection';
+        const serviceSubtype = 'On_site_pick_and_repair';
+        const iwOow = extractWarrantyFromOrder(order) === 'Sí' ? 'IW' : 'OOW';
+        const { appearanceDamage, userDamage } = inferDamageFlagsFromOrder(order);
+        const partCodes = parts.map((item) => item.name).slice(0, 10);
+        const newBoardImei = extractMainboardImeiFromOrder(order);
+        const customerEmail = extractCustomerEmailForClaim(order);
+
+        const templateRow = Object.fromEntries(
+          CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((column) => [column, ''])
+        ) as Record<(typeof CLAIM_UPLOAD_TEMPLATE_COLUMNS)[number], string>;
+
+        templateRow.service_order_status = order?.done_at || order?.closed_at || isDispatchStatus(order) ? 'Closed' : 'Open';
+        templateRow.Third_service_order_number = '';
+        templateRow.operator_service_order_number = order?.number || `OS-${order?.id || 'SN'}`;
+        templateRow.ISP_SC_code = CLAIM_ISP_SC_CODE;
+        templateRow.service_center_code = CLAIM_SERVICE_CENTER_CODE;
+        templateRow.customer_email = customerEmail;
+        templateRow.PO_number = '';
+        templateRow.dealer_name = extractEntryChannel(order);
+        templateRow.customer_type = extractEntryType(order) === 'SIN CLASIFICAR' ? 'RETAILER' : extractEntryType(order).toUpperCase();
+        templateRow.service_mode = 'Mail_In';
+        templateRow.service_type = serviceType;
+        templateRow.Return_type = '';
+        templateRow.Return_warehouse_type = '';
+        templateRow.service_subtype = serviceSubtype;
+        templateRow.IW_OOW = iwOow;
+        templateRow.Appearance_Damage = appearanceDamage;
+        templateRow.Malfunction_Description = l3Match.description;
+        templateRow.invoice_number = '';
+        templateRow.invoice_time = '';
+        templateRow.goods_id = goodsId;
+        templateRow.SN_Or_IMEI1 = imei;
+        templateRow.newSN = '';
+        templateRow.new_IMEI = '';
+        templateRow.Is_user_damange = userDamage;
+        templateRow.create_time = createdAtFormatted;
+        templateRow.SC_express_receipt_time = createdAtFormatted;
+        templateRow.actual_visit_time = createdAtFormatted;
+        templateRow.repair_start_time = repairStartFormatted;
+        templateRow.parts_apply_time = '';
+        templateRow.parts_arrive_time = '';
+        templateRow.material_shortage_time = '';
+        templateRow.repair_finish_time = repairFinishFormatted;
+        templateRow.deliver_back_to_user_time = repairFinishFormatted;
+        templateRow.close_time = repairFinishFormatted;
+        templateRow.receive_AWB = '';
+        templateRow.delivery_AWB = '';
+        templateRow.Level_3_malfunction_code = l3MalfunctionCode;
+        templateRow.processing_method_code = processingMethodCode;
+        templateRow.Activity_Project = selectedClaimGeneratorBrand;
+        templateRow.remark = remark;
+        templateRow.defect_description = l3Match.description;
+        templateRow.Goodid = goodsId;
+        templateRow.B2B = extractSedeFromOrder(order).includes('MEXICO') ? 'MX' : 'GT';
+
+        if (serviceType === 'Repair' && partCodes.length > 0) {
+          templateRow.old_PN1 = partCodes[0];
+          templateRow.new_PN1 = partCodes[0];
+        }
+
+        if (processingMethodCode === '5101') {
+          templateRow.old_SN1 = imei;
+          templateRow.old_IMEI1 = imei;
+          templateRow.new_SN1 = newBoardImei;
+          templateRow.new_IMEI1 = newBoardImei;
+        }
+
+        partCodes.forEach((partCode, index) => {
+          const partPosition = index + 1;
+          const newPnKey = `new_PN${partPosition}` as keyof typeof templateRow;
+          templateRow[newPnKey] = partCode;
+
+          if (partPosition <= 10) {
+            const oldSnKey = `old_SN${partPosition}` as keyof typeof templateRow;
+            const oldImeiKey = `old_IMEI${partPosition}` as keyof typeof templateRow;
+            const newSnKey = `new_SN${partPosition}` as keyof typeof templateRow;
+            const newImeiKey = `new_IMEI${partPosition}` as keyof typeof templateRow;
+            templateRow[oldSnKey] = '';
+            templateRow[oldImeiKey] = '';
+            templateRow[newSnKey] = '';
+            templateRow[newImeiKey] = '';
+          }
+        });
+
+        const missingFields = [
+          imei ? null : 'IMEI_SN',
+          goodsId ? null : 'GoodsID',
+          saleDate ? null : 'Sale_Date',
+        ].filter((value): value is string => Boolean(value));
+
+        return {
+          os: order?.number || `OS-${order?.id || 'SN'}`,
+          model: extractModelFromOrder(order),
+          category: normalizeText(extractProductGroupFromOrder(order)).includes('TABLET') ? 'Tablet' : 'Smartphone',
+          imei,
+          goodsId,
+          saleDate,
+          repairStart,
+          processingMethodCode,
+          l3MalfunctionCode,
+          spareParts: parts.map((item) => item.name).join(' | ') || 'Sin repuestos',
+          ispScCode: CLAIM_ISP_SC_CODE,
+          missingFields,
+          autoFilledRepairStart: Boolean(repairStart),
+          autoDetectedL1: processingMethodCode === '3001',
+          autoDetectedL3: l3MalfunctionCode === 'MP099-GEN',
+          templateRow,
+        };
+      });
+  }, [
+    isCustomMonthRangeActive,
+    ordersData,
+    selectedClaimGeneratorBrand,
+    selectedDateRange,
+    selectedEndMonth,
+    selectedClaimGeneratorBrand,
+    selectedSede,
+    selectedStartMonth,
+  ]);
+
+  const claimsTemplateDownloadRows = useMemo(() => {
+    return claimsGeneratorRows.map((row) => row.templateRow);
+  }, [claimsGeneratorRows]);
+
+  const downloadClaimsTemplateCsv = (rows: Array<Record<string, string>>, fileName: string) => {
+    if (typeof window === 'undefined') return;
+
+    const escapeCsv = (value: string) => {
+      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
+        return `"${value.replace(/"/g, '""')}"`;
+      }
+      return value;
+    };
+
+    const lines = [
+      CLAIM_UPLOAD_TEMPLATE_COLUMNS.join(','),
+      ...rows.map((row) => CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((column) => escapeCsv(String(row[column] || ''))).join(',')),
+    ];
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadClaimsTemplate = () => {
+    if (!claimsTemplateDownloadRows.length) {
+      downloadClaimsTemplateCsv([], `claims_template_${selectedClaimGeneratorBrand.toLowerCase()}_vacio.csv`);
+      return;
+    }
+
+    downloadClaimsTemplateCsv(
+      claimsTemplateDownloadRows,
+      `claims_template_${selectedClaimGeneratorBrand.toLowerCase()}.csv`
+    );
+  };
+
+  const handleDownloadClaimsTemplateEmpty = () => {
+    downloadClaimsTemplateCsv([], `claims_template_${selectedClaimGeneratorBrand.toLowerCase()}_vacio.csv`);
+  };
+
+  const claimsGeneratorSummary = useMemo(() => {
+    const total = claimsGeneratorRows.length;
+    const validRows = claimsGeneratorRows.filter((row) => row.missingFields.length === 0).length;
+    const incompleteRows = total - validRows;
+
+    const missingByField = claimsGeneratorRows.reduce((acc, row) => {
+      row.missingFields.forEach((field) => {
+        acc[field] = (acc[field] || 0) + 1;
+      });
+      return acc;
+    }, {} as Record<string, number>);
+
+    return {
+      total,
+      validRows,
+      incompleteRows,
+      missingByField: Object.entries(missingByField)
+        .map(([field, count]) => ({ field, count }))
+        .sort((a, b) => b.count - a.count),
+      autoFilledRepairStart: claimsGeneratorRows.filter((row) => row.autoFilledRepairStart).length,
+      autoDetectedL1: claimsGeneratorRows.filter((row) => row.autoDetectedL1).length,
+      autoDetectedL3Fallback: claimsGeneratorRows.filter((row) => row.autoDetectedL3).length,
+    };
+  }, [claimsGeneratorRows]);
+
+  const claimsGeneratorConfig = useMemo(() => {
+    if (selectedClaimGeneratorBrand === 'TCL' || selectedClaimGeneratorBrand === 'ALCATEL') {
+      return {
+        template: '.csv con encabezados ISP multimarca',
+        codingLogic: 'Catálogo de códigos TCL/Alcatel',
+      };
+    }
+
+    return {
+      template: '.xlsx Xiaomi con template ISP actualizado',
+      codingLogic: 'Catálogo Xiaomi MP00...',
+    };
+  }, [selectedClaimGeneratorBrand]);
+
+  const claimsPythonPrompt = useMemo(() => {
+    return [
+      `Actúa como Data Engineer Senior para postventa ${selectedClaimGeneratorBrand}.`,
+      'Construye un script Python listo para producción que lea 3 archivos reales (órdenes, códigos de falla, catálogo de partes),',
+      `filtre únicamente la marca ${selectedClaimGeneratorBrand} en órdenes que hayan pasado Control de Calidad, aplique validaciones y genere un archivo ${claimsGeneratorConfig.template}.`,
+      '',
+      'Reglas obligatorias:',
+      '1) Repair_Start_Time siempre = Created_At + 48 horas.',
+      '2) Repair_Finish_Time y Close_Time siempre = Repair_Start_Time + 24 horas.',
+      '3) Si no hay repuestos: service_type=Inspection y processing_method_code=3001.',
+      '4) Si hay repuestos: service_type=Repair y processing_method_code=5001 (o 5101 para mainboard).',
+      '5) Rellenar constantes obligatorias: ISP_SC_code=GTM00010, service_center_code=GT-TCW-MSC-Guatemala, service_mode=Mail_In.',
+      '6) customer_email por defecto recepcion_gt@mi.com cuando no exista correo del cliente.',
+      '7) Appearance_Damage e Is_user_damange por defecto No salvo marca explícita del técnico.',
+      '8) Si falta Level_3_malfunction_code: inferir por palabras clave del diagnóstico técnico.',
+      '',
+      'Campos críticos mínimos en la salida:',
+      CLAIM_TEMPLATE_CRITICAL_FIELDS.join(', '),
+      '',
+      `Contexto actual del dashboard: ${claimsGeneratorRows.length} órdenes candidatas, ${claimsGeneratorSummary.validRows} completas, ${claimsGeneratorSummary.incompleteRows} con faltantes.`,
+      'Incluye logging, validación de esquema, manejo de errores y exportación final.',
+    ].join('\n');
+  }, [
+    claimsGeneratorConfig.template,
+    claimsGeneratorRows.length,
+    claimsGeneratorSummary.incompleteRows,
+    claimsGeneratorSummary.validRows,
+    selectedClaimGeneratorBrand,
+  ]);
+
   const recentCriticalOrders = useMemo(() => {
     return filteredOrders
       .slice()
@@ -3303,6 +4944,184 @@ export default function DashboardMultimodular() {
       { field: 'Ingreso por orden', status: hasCosts ? 'Disponible parcial' : 'Pendiente financiero', color: hasCosts ? 'emerald' : 'amber' },
     ];
   }, [filteredOrders]);
+
+  // ─── Módulo de Bono Técnico ────────────────────────────────────────────────
+  const bonusRawRows = useMemo(() => {
+    const rows: {
+      date: string;
+      technician: string;
+      productLine: BonusProductLine;
+      level: 'L0' | 'L1' | 'L2' | 'Sin clasificar';
+      orderNumber: string;
+    }[] = [];
+
+    for (const order of ordersData) {
+      const technician = extractTechnicianFromOrder(order);
+      if (!technician || technician === 'Sin asignar') continue;
+
+      const productGroup = extractProductGroupFromOrder(order);
+      const productLine = classifyBonusProductLine(productGroup);
+      if (!productLine) continue;
+
+      const history = getOrderHistoryEntries(order);
+
+      // Collect all calendar days where "Entrega" appears in history
+      const entregaDays = new Set<string>();
+      // Collect all calendar days where "Listo" appears in history
+      const listoDays = new Set<string>();
+
+      for (const entry of history) {
+        const s = entry.status; // already normalized inside getOrderHistoryEntries
+        const day = entry.timestamp ? entry.timestamp.slice(0, 10) : '';
+        if (!day) continue;
+        if (s.includes('ENTREGA')) entregaDays.add(day);
+        if (s.includes('LISTO')) listoDays.add(day);
+      }
+
+      // Find the earliest day where BOTH Entrega AND Listo appear
+      const matchingDays = [...entregaDays].filter((d) => listoDays.has(d)).sort();
+      if (matchingDays.length === 0) continue;
+
+      const dateKey = matchingDays[0];
+
+      const serviceTexts = [
+        ...extractNamesFromCollection(order?.services),
+        ...extractNamesFromCollection(order?.works),
+        ...extractNamesFromCollection(order?.jobs),
+        ...extractProductEntriesFromOrder(order).map((e) => e.name),
+      ];
+      const level = classifyBonusRepairLevel(serviceTexts);
+
+      rows.push({
+        date: dateKey,
+        technician,
+        productLine,
+        level,
+        orderNumber: String(order?.number || order?.id || ''),
+      });
+    }
+
+    return rows;
+  }, [ordersData]);
+
+  /** Producción diaria por técnico en Control de Calidad (independiente del bono Entrega+Listo).
+   *  Usa el momento en que cada orden entró a CQ en el historial para asignar fecha y día. */
+  const bonusQcAggregates = useMemo(() => {
+    type QcKey = `${string}|${string}|${BonusProductLine}`;
+    const map = new Map<QcKey, {
+      date: string; technician: string; productLine: BonusProductLine;
+      l0: number; l1: number; l2: number; unclassified: number;
+    }>();
+
+    for (const order of ordersData) {
+      const technician = extractTechnicianFromOrder(order);
+      if (!technician || technician === 'Sin asignar') continue;
+
+      const productGroup = extractProductGroupFromOrder(order);
+      const productLine = classifyBonusProductLine(productGroup);
+      if (!productLine) continue;
+
+      const history = getOrderHistoryEntries(order);
+      // Find when the order entered Control de Calidad
+      const qcEntry = history.find(
+        (e) => e.status.includes('CONTROL DE CALIDAD') || e.status.includes('CALIDAD') || e.status.includes('CQ')
+      );
+      if (!qcEntry?.timestamp) continue;
+      const dateKey = qcEntry.timestamp.slice(0, 10);
+
+      const serviceTexts = [
+        ...extractNamesFromCollection(order?.services),
+        ...extractNamesFromCollection(order?.works),
+        ...extractNamesFromCollection(order?.jobs),
+        ...extractProductEntriesFromOrder(order).map((e) => e.name),
+      ];
+      const level = classifyBonusRepairLevel(serviceTexts);
+
+      const key: QcKey = `${dateKey}|${technician}|${productLine}`;
+      const prev = map.get(key) ?? { date: dateKey, technician, productLine, l0: 0, l1: 0, l2: 0, unclassified: 0 };
+      if (level === 'L0') prev.l0++;
+      else if (level === 'L1') prev.l1++;
+      else if (level === 'L2') prev.l2++;
+      else prev.unclassified++;
+      map.set(key, prev);
+    }
+
+    return Array.from(map.values()).map((entry) => {
+      const config = BONUS_METRICS_CONFIG.find((c) => c.line === entry.productLine)!;
+      const total = entry.l0 + entry.l1 + entry.l2 + entry.unclassified;
+      const weighted = Number((entry.l0 * config.pesoL0 + entry.l1 * config.pesoL1 + entry.l2 * config.pesoL2).toFixed(2));
+      const meetsQuota = weighted >= config.dailyQuota;
+      return { ...entry, total, weighted, quota: config.dailyQuota, meetsQuota };
+    }).sort((a, b) => b.date.localeCompare(a.date) || a.technician.localeCompare(b.technician));
+  }, [ordersData]);
+
+  const bonusDailyAggregates = useMemo(() => {
+    type AggKey = `${string}|${string}|${BonusProductLine}`;
+    const map = new Map<
+      AggKey,
+      { date: string; technician: string; productLine: BonusProductLine; l0: number; l1: number; l2: number; unclassified: number }
+    >();
+
+    for (const row of bonusRawRows) {
+      const key = `${row.date}|${row.technician}|${row.productLine}` as AggKey;
+      if (!map.has(key)) {
+        map.set(key, { date: row.date, technician: row.technician, productLine: row.productLine, l0: 0, l1: 0, l2: 0, unclassified: 0 });
+      }
+      const entry = map.get(key)!;
+      if (row.level === 'L0') entry.l0 += 1;
+      else if (row.level === 'L1') entry.l1 += 1;
+      else if (row.level === 'L2') entry.l2 += 1;
+      else entry.unclassified += 1;
+    }
+
+    return Array.from(map.values()).map((entry) => {
+      const config = BONUS_METRICS_CONFIG.find((c) => c.line === entry.productLine)!;
+      const total = entry.l0 + entry.l1 + entry.l2 + entry.unclassified;
+      // Producción ponderada por peso
+      const weighted = entry.l0 * config.pesoL0 + entry.l1 * config.pesoL1 + entry.l2 * config.pesoL2;
+      const surplusWeighted = Math.max(0, weighted - config.dailyQuota);
+      // Distribuir excedente ponderado de vuelta a unidades físicas: L2 primero (mayor valor)
+      const surplusL2 = surplusWeighted > 0 ? Math.min(entry.l2, surplusWeighted / config.pesoL2) : 0;
+      const remaining = surplusWeighted - surplusL2 * config.pesoL2;
+      const surplusL1 = remaining > 0 ? Math.min(entry.l1, remaining / config.pesoL1) : 0;
+      // Incentivo según peso — "según el peso se paga" — tarifa de Técnico
+      const incentive = surplusL2 * config.rates.tecnico.l2 + surplusL1 * config.rates.tecnico.l1;
+      return { ...entry, total, weighted: Number(weighted.toFixed(2)), quota: config.dailyQuota, surplusWeighted: Number(surplusWeighted.toFixed(2)), surplusL1: Number(surplusL1.toFixed(2)), surplusL2: Number(surplusL2.toFixed(2)), incentive: Number(incentive.toFixed(2)) };
+    }).sort((a, b) => b.date.localeCompare(a.date) || a.technician.localeCompare(b.technician));
+  }, [bonusRawRows]);
+
+  const bonusFilteredRows = useMemo(() => {
+    return bonusDailyAggregates.filter((row) => {
+      if (selectedBonusDate && row.date !== selectedBonusDate) return false;
+      if (selectedBonusTechnician !== 'ALL' && row.technician !== selectedBonusTechnician) return false;
+      if (selectedBonusLine !== 'ALL' && row.productLine !== selectedBonusLine) return false;
+      return true;
+    });
+  }, [bonusDailyAggregates, selectedBonusDate, selectedBonusTechnician, selectedBonusLine]);
+
+  const bonusSummary = useMemo(() => {
+    const totalIncentive = bonusFilteredRows.reduce((s, r) => s + r.incentive, 0);
+    const techsWithSurplus = new Set(bonusFilteredRows.filter((r) => r.surplusWeighted > 0).map((r) => r.technician)).size;
+    const totalSurplusUnits = bonusFilteredRows.reduce((s, r) => s + r.surplusL2 + r.surplusL1, 0);
+    const totalUnits = bonusFilteredRows.reduce((s, r) => s + r.total, 0);
+
+    const byTechnician = Array.from(
+      bonusFilteredRows.reduce((acc, row) => {
+        const prev = acc.get(row.technician) ?? { name: row.technician, incentive: 0, units: 0, surplus: 0 };
+        acc.set(row.technician, {
+          name: row.technician,
+          incentive: prev.incentive + row.incentive,
+          units: prev.units + row.total,
+          surplus: prev.surplus + row.surplusL2 + row.surplusL1,
+        });
+        return acc;
+      }, new Map<string, { name: string; incentive: number; units: number; surplus: number }>())
+        .values()
+    ).sort((a, b) => b.incentive - a.incentive);
+
+    return { totalIncentive, techsWithSurplus, totalSurplusUnits, totalUnits, byTechnician };
+  }, [bonusFilteredRows]);
+  // ──────────────────────────────────────────────────────────────────────────
 
   return (
     <div className="bg-slate-50 min-h-screen p-6 lg:p-10 font-sans">
@@ -3382,7 +5201,18 @@ export default function DashboardMultimodular() {
           <Tab icon={Package}>📦 Bodega</Tab>
           <Tab icon={ShieldCheck}>✅ Calidad</Tab>
           <Tab icon={CreditCard}>💰 Claims</Tab>
+          <Tab icon={TrendingUp}>📤 Subir Claims</Tab>
+          <Tab icon={Activity}>🏅 Bono Técnico</Tab>
         </TabList>
+        <div className="flex justify-end px-4 pb-2">
+          <Link
+            href="/despacho"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+          >
+            <Truck className="w-3.5 h-3.5" />
+            Módulo de Despacho
+          </Link>
+        </div>
 
         <TabPanels>
           {/* --- PESTAÑA 1: GERENCIAL --- */}
@@ -3426,6 +5256,45 @@ export default function DashboardMultimodular() {
               ))}
             </Grid>
 
+            {/* ── TAT Especial Móviles (meta 2 días) ── */}
+            <Card decoration="left" decorationColor={tatMovilesMetric.avg !== null && tatMovilesMetric.avg <= TAT_MOVILES_TARGET ? 'emerald' : 'rose'} className="mb-6">
+              <Flex justifyContent="between" alignItems="center" className="gap-4 flex-wrap">
+                <div>
+                  <Flex alignItems="center" className="gap-2 mb-1">
+                    <Icon icon={Clock} variant="light" size="sm" color="blue" />
+                    <Text className="text-xs font-bold text-slate-500 uppercase tracking-wide">TAT Especial · Móviles (Smartphones / Celulares)</Text>
+                    <Badge color="blue">Meta: {TAT_MOVILES_TARGET} días hábiles</Badge>
+                  </Flex>
+                  <Metric className={`text-3xl font-extrabold ${tatMovilesMetric.avg !== null && tatMovilesMetric.avg <= TAT_MOVILES_TARGET ? 'text-emerald-700' : tatMovilesMetric.avg !== null ? 'text-rose-600' : 'text-slate-400'}`}>
+                    {tatMovilesMetric.avg !== null ? `${tatMovilesMetric.avg} días` : '— sin datos'}
+                  </Metric>
+                  <Text className="text-xs text-slate-500 mt-1">Promedio E2E en días hábiles · {tatMovilesMetric.total} órdenes cerradas de móviles/tablets/feature phones en el período filtrado</Text>
+                </div>
+                <Grid numItemsSm={3} className="gap-4 min-w-[320px]">
+                  <div className="text-center">
+                    <Text className="text-xs text-slate-500 uppercase">En tiempo</Text>
+                    <Metric className="text-2xl text-emerald-700">{tatMovilesMetric.onTime}</Metric>
+                    <Text className="text-xs text-emerald-600 font-semibold">≤ {TAT_MOVILES_TARGET} días</Text>
+                  </div>
+                  <div className="text-center">
+                    <Text className="text-xs text-slate-500 uppercase">Tarde</Text>
+                    <Metric className="text-2xl text-rose-600">{tatMovilesMetric.late}</Metric>
+                    <Text className="text-xs text-rose-500 font-semibold">&gt; {TAT_MOVILES_TARGET} días</Text>
+                  </div>
+                  <div className="text-center">
+                    <Text className="text-xs text-slate-500 uppercase">% Cumplimiento</Text>
+                    <Metric className={`text-2xl font-bold ${tatMovilesMetric.pct >= 80 ? 'text-emerald-700' : 'text-rose-600'}`}>{tatMovilesMetric.pct}%</Metric>
+                    <Text className="text-xs text-slate-500">de {tatMovilesMetric.total} cerradas</Text>
+                  </div>
+                </Grid>
+              </Flex>
+              <ProgressBar
+                value={tatMovilesMetric.pct}
+                color={tatMovilesMetric.pct >= 80 ? 'emerald' : tatMovilesMetric.pct >= 60 ? 'amber' : 'rose'}
+                className="mt-4"
+              />
+            </Card>
+
             <Grid numItemsLg={2} className="gap-6 mb-6">
               <Card>
                 <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
@@ -3466,8 +5335,15 @@ export default function DashboardMultimodular() {
                   <Badge color={selectedSlaSegment === 'Fuera SLA' ? 'rose' : 'emerald'}>
                     {selectedSlaSegment === 'Fuera SLA' ? `${overdueSlaOrders.length} vencidas` : `${ordersWithinSla} en SLA`}
                   </Badge>
+                  <button
+                    type="button"
+                    onClick={exportSlaToExcel}
+                    className="flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                  >
+                    ↓ Exportar Excel
+                  </button>
                 </Flex>
-                <div className="mt-4 flex gap-2">
+                <div className="mt-4 flex flex-wrap gap-2 items-center">
                   <button
                     type="button"
                     onClick={() => setSelectedSlaSegment('Fuera SLA')}
@@ -3482,6 +5358,14 @@ export default function DashboardMultimodular() {
                   >
                     Ver En SLA
                   </button>
+                  <div className="ml-auto">
+                    <Select value={slaEquipFilter} onValueChange={setSlaEquipFilter} className="w-[220px]">
+                      <SelectItem value="ALL">Todos los tipos</SelectItem>
+                      {Array.from(new Set(slaOrderDetails.map((o) => o.productGroup).filter(Boolean))).sort().map((g) => (
+                        <SelectItem key={g} value={g}>{g}</SelectItem>
+                      ))}
+                    </Select>
+                  </div>
                 </div>
                 <div className="mt-6 overflow-x-auto max-h-[380px]">
                   <table className="min-w-full border border-slate-200 text-sm">
@@ -3490,12 +5374,13 @@ export default function DashboardMultimodular() {
                         <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Orden</th>
                         <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Equipo</th>
                         <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado</th>
-                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Vence</th>
+                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Ingreso</th>
                         <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">{selectedSlaSegment === 'Fuera SLA' ? 'Días vencida' : 'Margen SLA'}</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {slaOrderDetails.length > 0 ? slaOrderDetails.map((item) => (
+                      {slaOrderDetails.filter((item) => slaEquipFilter === 'ALL' || item.productGroup === slaEquipFilter).length > 0
+                        ? slaOrderDetails.filter((item) => slaEquipFilter === 'ALL' || item.productGroup === slaEquipFilter).map((item) => (
                         <tr key={item.id} className="bg-white even:bg-slate-50 align-top">
                           <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{item.number}</td>
                           <td className="border border-slate-200 px-3 py-2 text-slate-700">
@@ -3506,12 +5391,17 @@ export default function DashboardMultimodular() {
                             <div>{item.status}</div>
                             <div className="text-xs text-rose-600">{item.reason}</div>
                           </td>
-                          <td className="border border-slate-200 px-3 py-2 text-slate-700">{item.dueDate}</td>
+                          <td className="border border-slate-200 px-3 py-2 text-slate-700">
+                            <div>{item.dueDate}</div>
+                            <div className="text-xs text-slate-500">Objetivo: {item.slaTarget} días</div>
+                          </td>
                           <td className={`border border-slate-200 px-3 py-2 text-right font-semibold ${selectedSlaSegment === 'Fuera SLA' ? 'text-rose-600' : 'text-emerald-600'}`}>{item.overdueDays}</td>
                         </tr>
                       )) : (
                         <tr className="bg-white">
-                          <td colSpan={5} className="border border-slate-200 px-3 py-6 text-center text-slate-500">No hay órdenes para el estado SLA seleccionado.</td>
+                          <td colSpan={5} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
+                            {slaEquipFilter !== 'ALL' ? `Sin resultados para "${slaEquipFilter}".` : 'No hay órdenes para el estado SLA seleccionado.'}
+                          </td>
                         </tr>
                       )}
                     </tbody>
@@ -3608,18 +5498,30 @@ export default function DashboardMultimodular() {
                     ))}
                   </Select>
                </Flex>
-               <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 mt-8 relative">
+               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7 gap-4 mt-8 relative">
                   {filteredFunnelData.map((step, idx) => (
                     <button
                       key={idx}
                       type="button"
                       onClick={() => setSelectedFunnelStage(step.stage)}
-                      className={`relative flex flex-col items-center rounded-xl p-1 transition-all ${selectedFunnelStage === step.stage ? 'ring-2 ring-slate-400 ring-offset-2' : ''}`}
+                      className={`relative flex flex-col items-center rounded-xl p-1 transition-all group ${selectedFunnelStage === step.stage ? 'ring-2 ring-slate-400 ring-offset-2' : ''}`}
                     >
                        <div className={`w-full h-16 rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg shadow-${step.color}-100 bg-${step.color}-500 transition-all hover:scale-105`}>
                           {step.count}
                        </div>
                        <Text className="mt-3 font-semibold text-slate-700">{step.stage}</Text>
+                       {/* Tooltip con estados agrupados */}
+                       {funnelStageStatusMap[step.stage]?.length > 0 && (
+                         <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-50 hidden group-hover:block w-56 bg-slate-900 text-white text-[11px] rounded-lg shadow-xl p-3 pointer-events-none">
+                           <div className="font-bold text-slate-300 mb-1.5 uppercase tracking-wide text-[10px]">Estados incluidos</div>
+                           <ul className="space-y-0.5">
+                             {funnelStageStatusMap[step.stage].map((s) => (
+                               <li key={s} className="truncate text-slate-100">• {s}</li>
+                             ))}
+                           </ul>
+                           <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-900" />
+                         </div>
+                       )}
                        {idx < filteredFunnelData.length - 1 && (
                          <div className="absolute top-8 -right-4 z-10 hidden lg:block">
                             <Icon icon={Activity} variant="simple" color="slate" size="xs" />
@@ -4414,6 +6316,315 @@ export default function DashboardMultimodular() {
                  </table>
                </div>
              </Card>
+
+             {/* ── MRP: PLAN DE COMPRA INTELIGENTE ── */}
+             <div className="mt-8 space-y-6">
+               {/* Header */}
+               <div className="flex items-center gap-3">
+                 <div className="h-8 w-1.5 rounded-full bg-[#001e6c]" />
+                 <div>
+                   <h2 className="text-lg font-bold text-slate-800">Plan de Compra Inteligente (MRP)</h2>
+                   <p className="text-xs text-slate-500">Basado en consumo real de los últimos {mrpData.daySpan} días · Lead time: 21 días · Buffer: 15%</p>
+                 </div>
+               </div>
+
+               {/* Resumen ejecutivo KPIs */}
+               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                 <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                   <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">SKUs con demanda</p>
+                   <p className="text-3xl font-bold text-slate-800 mt-1">{mrpData.rows.length}</p>
+                   <p className="text-[11px] text-slate-400 mt-1">repuestos en seguimiento</p>
+                 </div>
+                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
+                   <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-700">Backorder activo</p>
+                   <p className="text-3xl font-bold text-amber-700 mt-1">{mrpData.totalBackorder}</p>
+                   <p className="text-[11px] text-amber-600 mt-1">unidades no atendidas</p>
+                 </div>
+                 <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 shadow-sm">
+                   <p className="text-[11px] font-semibold uppercase tracking-wider text-rose-700">Alertas urgentes</p>
+                   <p className="text-3xl font-bold text-rose-700 mt-1">{mrpData.urgentes.length}</p>
+                   <p className="text-[11px] text-rose-500 mt-1">SKUs requieren compra inmediata</p>
+                 </div>
+                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 shadow-sm">
+                   <p className="text-[11px] font-semibold uppercase tracking-wider text-blue-700">Forecast 21 días</p>
+                   <p className="text-3xl font-bold text-blue-700 mt-1">{mrpData.totalForecast}</p>
+                   <p className="text-[11px] text-blue-500 mt-1">unidades proyectadas totales</p>
+                 </div>
+               </div>
+
+               {/* Alertas críticas */}
+               {mrpData.urgentes.length > 0 && (
+                 <div className="rounded-xl border border-rose-300 bg-rose-50 p-4">
+                   <div className="flex items-center gap-2 mb-3">
+                     <span className="text-rose-600 font-bold text-sm uppercase tracking-wide">🔴 Alertas Críticas — Compra Urgente</span>
+                   </div>
+                   <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                     {mrpData.urgentes.map((r) => (
+                       <div key={r.sku} className="rounded-lg bg-white border border-rose-200 px-3 py-2 flex justify-between items-start gap-2">
+                         <div className="min-w-0">
+                           <p className="text-xs font-semibold text-slate-800 truncate" title={r.sku}>{r.sku}</p>
+                           <p className="text-[11px] text-rose-600 mt-0.5">Backorder: {r.backorder} · Forecast: {r.forecast21d}</p>
+                         </div>
+                         <span className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${r.prioridad === 'URGENTE' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}`}>{r.prioridad}</span>
+                       </div>
+                     ))}
+                   </div>
+                 </div>
+               )}
+
+               {/* Tabla plan de compra */}
+               <Card>
+                 <div className="flex items-start justify-between flex-wrap gap-2">
+                   <div>
+                     <Title>📦 Plan de Compra {mrpData.hasRealParts ? '— Piezas Reales' : '— Estimado por Modelo'}</Title>
+                     <Text className="text-xs text-slate-500 mt-1">
+                       {mrpData.hasRealParts
+                         ? `Basado en ${Object.keys(bodegaOrderProducts).length} órdenes bloqueadas · SKUs de piezas reales desde Orderry · Compra = backorder + forecast 21d + buffer 15%`
+                         : 'Cargando piezas… o no hay órdenes bloqueadas. Usando modelos de equipo como estimado.'}
+                     </Text>
+                   </div>
+                   {bodegaPartsLoading && (
+                     <span className="text-[11px] text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-3 py-1 animate-pulse">
+                       ⏳ Cargando piezas desde Orderry…
+                     </span>
+                   )}
+                   {mrpData.hasRealParts && (
+                     <span className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1">
+                       ✅ Datos reales de piezas
+                     </span>
+                   )}
+                 </div>
+                 <div className="mt-4 overflow-x-auto">
+                   <table className="min-w-full text-xs border border-slate-200">
+                     <thead className="bg-slate-800 text-white">
+                       <tr>
+                         <th className="px-3 py-2 text-left font-semibold">Código</th>
+                         <th className="px-3 py-2 text-left font-semibold">Repuesto / Descripción</th>
+                         <th className="px-3 py-2 text-center font-semibold">Backorder</th>
+                         <th className="px-3 py-2 text-center font-semibold">Forecast 21d</th>
+                         <th className="px-3 py-2 text-center font-semibold">Compra sugerida</th>
+                         <th className="px-3 py-2 text-center font-semibold">Prioridad</th>
+                       </tr>
+                     </thead>
+                     <tbody>
+                       {mrpData.rows.map((r) => (
+                         <tr key={r.sku} className="bg-white even:bg-slate-50 hover:bg-blue-50 transition-colors">
+                           <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">{r.code || '—'}</td>
+                           <td className="px-3 py-2 text-slate-800 max-w-[280px] truncate" title={r.title}>{r.title}</td>
+                           <td className={`px-3 py-2 text-center font-bold ${r.backorder > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{r.backorder > 0 ? r.backorder : '—'}</td>
+                           <td className="px-3 py-2 text-center font-semibold text-blue-700">{r.forecast21d}</td>
+                           <td className="px-3 py-2 text-center font-bold text-emerald-700">{r.compraSugerida}</td>
+                           <td className="px-3 py-2 text-center">
+                             <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full
+                               ${r.prioridad === 'URGENTE' ? 'bg-rose-600 text-white' :
+                                 r.prioridad === 'ALTA' ? 'bg-amber-500 text-white' :
+                                 r.prioridad === 'MEDIA' ? 'bg-blue-500 text-white' :
+                                 'bg-slate-200 text-slate-600'}`}>
+                               {r.prioridad}
+                             </span>
+                           </td>
+                         </tr>
+                       ))}
+                       {mrpData.rows.length === 0 && (
+                         <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-400">Sin datos de piezas disponibles</td></tr>
+                       )}
+                     </tbody>
+                     {mrpData.rows.length > 0 && (
+                       <tfoot className="bg-slate-100 font-bold text-slate-700">
+                         <tr>
+                           <td className="px-3 py-2 text-right" colSpan={2}>TOTAL</td>
+                           <td className="px-3 py-2 text-center text-rose-600">{mrpData.totalBackorder || '—'}</td>
+                           <td className="px-3 py-2 text-center text-blue-700">{mrpData.totalForecast}</td>
+                           <td className="px-3 py-2 text-center text-emerald-700">{mrpData.rows.reduce((s, r) => s + r.compraSugerida, 0)}</td>
+                           <td />
+                         </tr>
+                       </tfoot>
+                     )}
+                   </table>
+                 </div>
+               </Card>
+
+               {/* Impacto económico estimado */}
+               <Card className="border-rose-200 bg-rose-50/40">
+                 <Title className="text-rose-900">💰 Impacto Económico — Nota de Crédito / Backorder</Title>
+                 <div className="mt-4 grid sm:grid-cols-3 gap-4">
+                   <div className="rounded-lg bg-white border border-rose-100 p-4">
+                     <p className="text-[11px] font-semibold uppercase tracking-wider text-rose-600">Órdenes Nota de Crédito</p>
+                     <p className="text-2xl font-bold text-rose-700 mt-1">{bodegaTrackingSummary.noteCreditOrders}</p>
+                     <p className="text-[11px] text-slate-500 mt-1">Órdenes sin reparación por falta de repuesto</p>
+                   </div>
+                   <div className="rounded-lg bg-white border border-amber-100 p-4">
+                     <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-700">En espera de repuestos</p>
+                     <p className="text-2xl font-bold text-amber-700 mt-1">{bodegaTrackingSummary.waitingOrders}</p>
+                     <p className="text-[11px] text-slate-500 mt-1">Órdenes bloqueadas en estado Esperando Partes</p>
+                   </div>
+                   <div className="rounded-lg bg-white border border-blue-100 p-4">
+                     <p className="text-[11px] font-semibold uppercase tracking-wider text-blue-700">Fill Rate actual</p>
+                     <p className="text-2xl font-bold text-blue-700 mt-1">{bodegaTrackingSummary.fillRate}%</p>
+                     <p className="text-[11px] text-slate-500 mt-1">Porcentaje de demanda atendida con stock disponible</p>
+                   </div>
+                 </div>
+                 <div className="mt-4 rounded-lg bg-white border border-rose-100 p-3 text-xs text-slate-600">
+                   <span className="font-semibold text-rose-700">Nota:</span> El ingreso perdido por backorder se estima como el número de órdenes NC × el ingreso promedio por reparación del modelo afectado. Para cuantificación exacta, configurar tarifa base por modelo en el sistema de precios.
+                 </div>
+               </Card>
+
+               {/* ── DETALLE ÓRDENES BLOQUEADAS ── */}
+               <Card className="border-amber-200 bg-amber-50/30">
+                 <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                   <Title className="text-amber-900">⏳ Órdenes Esperando Piezas ({blockedOrdersDetail.esperandoPartes.length})</Title>
+                   <div className="flex items-center gap-2">
+                     {bodegaPartsLoading && <span className="text-[11px] text-blue-600 animate-pulse">⏳ Cargando piezas…</span>}
+                     <Text className="text-xs text-slate-500">Piezas se cargan automáticamente desde Orderry · clic ✏️ para anotar manualmente</Text>
+                   </div>
+                 </div>
+                 {blockedOrdersDetail.esperandoPartes.length === 0 ? (
+                   <Text className="text-slate-400 text-sm">No hay órdenes actualmente en espera de piezas.</Text>
+                 ) : (
+                   <div className="overflow-x-auto">
+                     <table className="w-full text-xs">
+                       <thead>
+                         <tr className="bg-amber-100 text-amber-900 uppercase text-[10px] tracking-wide">
+                           <th className="px-3 py-2 text-left font-semibold">Orden</th>
+                           <th className="px-3 py-2 text-left font-semibold">Modelo</th>
+                           <th className="px-3 py-2 text-left font-semibold">Falla reportada</th>
+                           <th className="px-3 py-2 text-left font-semibold">Piezas registradas en Orderry</th>
+                           <th className="px-3 py-2 text-left font-semibold w-40">Nota manual ✏️</th>
+                           <th className="px-3 py-2 text-center font-semibold">Días</th>
+                         </tr>
+                       </thead>
+                       <tbody>
+                         {blockedOrdersDetail.esperandoPartes.map((row, i) => {
+                           const apiParts: OrderPart[] = bodegaOrderProducts[row.orderId] || [];
+                           return (
+                             <tr key={row.orderNumber} className={i % 2 === 0 ? 'bg-white' : 'bg-amber-50/50'}>
+                               <td className="px-3 py-2 font-mono font-bold text-amber-800 whitespace-nowrap">{row.orderNumber}</td>
+                               <td className="px-3 py-2 text-slate-700 max-w-[180px] truncate" title={row.model}>{row.model}</td>
+                               <td className="px-3 py-2 text-slate-600 max-w-[200px] truncate" title={row.malfunction}>{row.malfunction}</td>
+                               <td className="px-3 py-2 max-w-[220px]">
+                                 {apiParts.length > 0 ? (
+                                   <div className="flex flex-col gap-0.5">
+                                     {apiParts.map((p) => (
+                                       <span key={p.sku} className="inline-flex items-center gap-1 text-[11px]">
+                                         <span className="font-mono font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1">{p.code}</span>
+                                         <span className="text-slate-500 truncate" title={p.title}>{p.title.replace(p.code + '-', '').slice(0, 40)}</span>
+                                       </span>
+                                     ))}
+                                   </div>
+                                 ) : bodegaPartsLoading ? (
+                                   <span className="text-slate-300 italic text-[11px]">cargando…</span>
+                                 ) : (
+                                   <span className="text-slate-300 italic text-[11px]">sin piezas registradas</span>
+                                 )}
+                               </td>
+                               <td className="px-3 py-2 w-40">
+                                 {editingPartNote === row.orderNumber ? (
+                                   <input
+                                     autoFocus
+                                     defaultValue={partsNotes[row.orderNumber] || ''}
+                                     onBlur={(e) => { savePartNote(row.orderNumber, e.target.value.trim()); setEditingPartNote(null); }}
+                                     onKeyDown={(e) => { if (e.key === 'Enter') { savePartNote(row.orderNumber, (e.target as HTMLInputElement).value.trim()); setEditingPartNote(null); } if (e.key === 'Escape') setEditingPartNote(null); }}
+                                     className="w-full border border-amber-400 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
+                                     placeholder="Ej: PCBA/DISPLAY"
+                                   />
+                                 ) : (
+                                   <button
+                                     onClick={() => setEditingPartNote(row.orderNumber)}
+                                     className={`w-full text-left px-2 py-0.5 rounded truncate transition-colors ${partsNotes[row.orderNumber] ? 'text-emerald-700 font-semibold bg-emerald-50 hover:bg-emerald-100' : 'text-slate-300 italic bg-slate-50 hover:bg-amber-50 hover:text-amber-700'}`}
+                                   >
+                                     {partsNotes[row.orderNumber] || '+ Nota'}
+                                   </button>
+                                 )}
+                               </td>
+                               <td className="px-3 py-2 text-center">
+                                 <span className={`inline-block px-2 py-0.5 rounded-full font-semibold ${
+                                   row.daysWaiting >= 14 ? 'bg-rose-100 text-rose-700' : row.daysWaiting >= 7 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'
+                                 }`}>{row.daysWaiting}d</span>
+                               </td>
+                             </tr>
+                           );
+                         })}
+                       </tbody>
+                     </table>
+                   </div>
+                 )}
+               </Card>
+
+               <Card className="border-rose-200 bg-rose-50/30">
+                 <div className="flex items-center justify-between mb-3">
+                   <Title className="text-rose-900">🔴 Escaladas a Nota de Crédito ({blockedOrdersDetail.escaladaNc.length})</Title>
+                   <Text className="text-xs text-slate-500">Sin pieza disponible — proceso de NC pendiente</Text>
+                 </div>
+                 {blockedOrdersDetail.escaladaNc.length === 0 ? (
+                   <Text className="text-slate-400 text-sm">No hay órdenes escaladas a NC actualmente.</Text>
+                 ) : (
+                   <div className="overflow-x-auto">
+                     <table className="w-full text-xs">
+                       <thead>
+                         <tr className="bg-rose-100 text-rose-900 uppercase text-[10px] tracking-wide">
+                           <th className="px-3 py-2 text-left font-semibold">Orden</th>
+                           <th className="px-3 py-2 text-left font-semibold">Modelo</th>
+                           <th className="px-3 py-2 text-left font-semibold">Falla reportada</th>
+                           <th className="px-3 py-2 text-left font-semibold">Piezas registradas en Orderry</th>
+                           <th className="px-3 py-2 text-left font-semibold w-40">Nota manual ✏️</th>
+                           <th className="px-3 py-2 text-center font-semibold">Días</th>
+                         </tr>
+                       </thead>
+                       <tbody>
+                         {blockedOrdersDetail.escaladaNc.map((row, i) => {
+                           const apiParts: OrderPart[] = bodegaOrderProducts[row.orderId] || [];
+                           return (
+                             <tr key={row.orderNumber} className={i % 2 === 0 ? 'bg-white' : 'bg-rose-50/50'}>
+                               <td className="px-3 py-2 font-mono font-bold text-rose-800 whitespace-nowrap">{row.orderNumber}</td>
+                               <td className="px-3 py-2 text-slate-700 max-w-[180px] truncate" title={row.model}>{row.model}</td>
+                               <td className="px-3 py-2 text-slate-600 max-w-[200px] truncate" title={row.malfunction}>{row.malfunction}</td>
+                               <td className="px-3 py-2 max-w-[220px]">
+                                 {apiParts.length > 0 ? (
+                                   <div className="flex flex-col gap-0.5">
+                                     {apiParts.map((p) => (
+                                       <span key={p.sku} className="inline-flex items-center gap-1 text-[11px]">
+                                         <span className="font-mono font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded px-1">{p.code}</span>
+                                         <span className="text-slate-500 truncate" title={p.title}>{p.title.replace(p.code + '-', '').slice(0, 40)}</span>
+                                       </span>
+                                     ))}
+                                   </div>
+                                 ) : bodegaPartsLoading ? (
+                                   <span className="text-slate-300 italic text-[11px]">cargando…</span>
+                                 ) : (
+                                   <span className="text-slate-300 italic text-[11px]">sin piezas registradas</span>
+                                 )}
+                               </td>
+                               <td className="px-3 py-2 w-40">
+                                 {editingPartNote === row.orderNumber ? (
+                                   <input
+                                     autoFocus
+                                     defaultValue={partsNotes[row.orderNumber] || ''}
+                                     onBlur={(e) => { savePartNote(row.orderNumber, e.target.value.trim()); setEditingPartNote(null); }}
+                                     onKeyDown={(e) => { if (e.key === 'Enter') { savePartNote(row.orderNumber, (e.target as HTMLInputElement).value.trim()); setEditingPartNote(null); } if (e.key === 'Escape') setEditingPartNote(null); }}
+                                     className="w-full border border-rose-400 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-rose-500 bg-white"
+                                     placeholder="Ej: PCBA/DISPLAY"
+                                   />
+                                 ) : (
+                                   <button
+                                     onClick={() => setEditingPartNote(row.orderNumber)}
+                                     className={`w-full text-left px-2 py-0.5 rounded truncate transition-colors ${partsNotes[row.orderNumber] ? 'text-emerald-700 font-semibold bg-emerald-50 hover:bg-emerald-100' : 'text-slate-300 italic bg-slate-50 hover:bg-rose-50 hover:text-rose-700'}`}
+                                   >
+                                     {partsNotes[row.orderNumber] || '+ Nota'}
+                                   </button>
+                                 )}
+                               </td>
+                               <td className="px-3 py-2 text-center">
+                                 <span className="inline-block px-2 py-0.5 rounded-full font-semibold bg-rose-100 text-rose-700">{row.daysWaiting}d</span>
+                               </td>
+                             </tr>
+                           );
+                         })}
+                       </tbody>
+                     </table>
+                   </div>
+                 )}
+               </Card>
+             </div>
           </TabPanel>
 
           {/* --- PESTAÑA 5: QA --- */}
@@ -4421,30 +6632,50 @@ export default function DashboardMultimodular() {
              <Grid numItemsSm={1} numItemsLg={4} className="gap-6 mb-8">
                 <Card>
                    <Text className="text-slate-500">QC Failure Rate</Text>
-                   <Metric>4.2%</Metric>
-                   <BadgeDelta deltaType="moderateDecrease" size="xs">-0.8%</BadgeDelta>
+                   <Metric>{qaOperationalMetrics.qaFailureRate}%</Metric>
+                   <Text className="text-xs text-slate-500 mt-2">Rechazos por retorno a estados anteriores tras pasar por Listo/Control de calidad</Text>
                 </Card>
                 <Card>
                    <Text className="text-slate-500">Reprocesos (Taller)</Text>
-                   <Metric>12</Metric>
-                   <Text className="text-xs text-rose-500">Requires review</Text>
+                   <Metric>{qaOperationalMetrics.rejectedCount}</Metric>
+                   <Text className="text-xs text-rose-500">Órdenes que regresaron a estados previos</Text>
                 </Card>
                 <Card>
-                   <Text className="text-slate-500">Average time in QA</Text>
-                   <Metric>2.5h</Metric>
+                   <Text className="text-slate-500">Tiempo promedio en Listo (QC)</Text>
+                   <Metric>{qaOperationalMetrics.avgQaDays.toFixed(2)} días</Metric>
+                   <Text className="text-xs text-slate-500">Promedio equivalente: {qaOperationalMetrics.avgQaHours.toFixed(1)}h · Mediana: {qaOperationalMetrics.medianQaDays.toFixed(2)}d</Text>
                 </Card>
                 <Card>
-                   <Text className="text-slate-500">DOA Rate</Text>
-                   <Metric>1.5%</Metric>
-                   <BadgeDelta deltaType="unchanged" size="xs">0</BadgeDelta>
+                   <Text className="text-slate-500">Órdenes evaluadas en QC</Text>
+                   <Metric>{qaOperationalMetrics.qaOrdersCount}</Metric>
+                   <Text className="text-xs text-slate-500">DOA/DAP en período: {qaOperationalMetrics.doaRate}%</Text>
                 </Card>
+             </Grid>
+
+             <Grid numItemsSm={1} numItemsLg={3} className="gap-6 mb-8">
+               <Card>
+                 <Text className="text-slate-500">P90 tiempo en Listo (QC)</Text>
+                 <Metric>{qaOperationalMetrics.p90QaDays.toFixed(2)} días</Metric>
+                 <Text className="text-xs text-slate-500">El 90% de las órdenes tarda este valor o menos.</Text>
+               </Card>
+               <Card>
+                 <Text className="text-slate-500">Órdenes actualmente en QC</Text>
+                 <Metric>{qaOperationalMetrics.currentlyInQaCount}</Metric>
+                 <Text className="text-xs text-slate-500">Casos activos en estatus del grupo Listo.</Text>
+               </Card>
+               <Card>
+                 <Text className="text-slate-500">Cobertura de historial</Text>
+                 <Metric>{qaOperationalMetrics.historyCoverage}%</Metric>
+                 <ProgressBar value={Math.max(0, Math.min(qaOperationalMetrics.historyCoverage, 100))} color="blue" className="mt-3" />
+                 <Text className="text-xs text-slate-500 mt-2">Porcentaje de órdenes QC con historial para TAT exacto.</Text>
+               </Card>
              </Grid>
 
              <Card className="mb-8">
                 <Title>Calidad Operativa: Aprobados vs Rechazados</Title>
                 <BarChart
                   className="mt-6 h-80"
-                  data={QA_RESULT_DATA}
+                  data={qaOperationalMetrics.weeklyData}
                   index="week"
                   categories={["Aprobados", "Rechazados"]}
                   colors={["emerald", "rose"]}
@@ -4453,20 +6684,258 @@ export default function DashboardMultimodular() {
              </Card>
 
              <Card>
-               <Title>Distribución de Fallas detectadas por QA</Title>
-               <DonutChart
-                 className="mt-6 h-64"
-                 data={[
-                   { type: 'Funcional', val: 55 },
-                   { type: 'Cosmético', val: 25 },
-                   { type: 'Software', val: 15 },
-                   { type: 'Limpieza', val: 5 },
-                 ]}
-                 category="val"
-                 index="type"
-                 colors={["indigo", "cyan", "blue", "slate"]}
-                 valueFormatter={(v) => `${v}%`}
-               />
+               <Title>Órdenes rechazadas por retorno de estado</Title>
+               <Text className="mt-2 text-xs text-slate-500">Si una orden pasó por Listo/Control de calidad y volvió a estados anteriores, se marca como rechazo.</Text>
+               <div className="mt-4 overflow-x-auto">
+                 <table className="min-w-full border border-slate-200 text-sm">
+                   <thead className="bg-slate-100">
+                     <tr>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Equipo</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado de retorno</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Técnico</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {qaOperationalMetrics.rejectionRows.length ? qaOperationalMetrics.rejectionRows.map((row, idx) => (
+                       <tr key={`${row.number}-${row.returnedStatus}-${idx}`} className="bg-white even:bg-slate-50">
+                         <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{row.number}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.equipment}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-rose-700">{row.returnedStatus}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.technician}</td>
+                       </tr>
+                     )) : (
+                       <tr className="bg-white">
+                         <td colSpan={4} className="border border-slate-200 px-3 py-6 text-center text-slate-500">No se detectaron rechazos por retorno en el período filtrado.</td>
+                       </tr>
+                     )}
+                   </tbody>
+                 </table>
+               </div>
+             </Card>
+
+             {/* Gráficos: distribución TAT + por técnico */}
+             <Grid numItemsLg={2} className="gap-6 mt-6">
+               <Card>
+                 <Title>Distribución TAT en Control de Calidad</Title>
+                 <Text className="mt-1 text-xs text-slate-500">Rango de tiempo que las órdenes permanecen en el grupo Listo.</Text>
+                 {qaOperationalMetrics.tatDistribution.some((d) => d.count > 0) ? (
+                   <DonutChart
+                     className="mt-6 h-52"
+                     data={qaOperationalMetrics.tatDistribution}
+                     index="range"
+                     category="count"
+                     colors={['emerald', 'amber', 'orange', 'rose']}
+                     valueFormatter={(v) => `${v} órdenes`}
+                     showLabel
+                   />
+                 ) : (
+                   <Text className="mt-6 text-sm text-slate-400 text-center py-8">Sin datos en el período.</Text>
+                 )}
+               </Card>
+               <Card>
+                 <Title>Equipos en QC por Técnico</Title>
+                 <Text className="mt-1 text-xs text-slate-500">Cantidad de órdenes en Control de Calidad asignadas a cada técnico.</Text>
+                 {qaOperationalMetrics.byTechnicianInQc.length > 0 ? (
+                   <BarChart
+                     className="mt-4 h-52"
+                     data={qaOperationalMetrics.byTechnicianInQc}
+                     index="name"
+                     categories={['active', 'total']}
+                     colors={['amber', 'blue']}
+                     layout="vertical"
+                     yAxisWidth={140}
+                     valueFormatter={(v) => `${v}`}
+                     stack={false}
+                   />
+                 ) : (
+                   <Text className="mt-6 text-sm text-slate-400 text-center py-8">Sin datos en el período.</Text>
+                 )}
+               </Card>
+             </Grid>
+
+             <Card className="mt-6">
+               <Title>Top TAT en Control de Calidad</Title>
+               <Text className="mt-2 text-xs text-slate-500">Órdenes con mayor permanencia en el grupo Listo — todas las unidades con paginación.</Text>
+               <div className="mt-4 overflow-x-auto">
+                 <table className="min-w-full border border-slate-200 text-sm">
+                   <thead className="bg-slate-100">
+                     <tr>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Equipo</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Técnico</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado actual</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Entró a QC</th>
+                       <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">TAT QC (días)</th>
+                       <th className="border border-slate-200 px-3 py-2 text-center font-semibold text-slate-700">Activo</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {qaOperationalMetrics.topQaAgingRows.length ? (
+                       qaOperationalMetrics.topQaAgingRows
+                         .slice(qaAgingPage * QA_AGING_PAGE_SIZE, (qaAgingPage + 1) * QA_AGING_PAGE_SIZE)
+                         .map((row, idx) => (
+                           <tr key={`${row.number}-${idx}`} className="bg-white even:bg-slate-50">
+                             <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{row.number}</td>
+                             <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.equipment}</td>
+                             <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.technician}</td>
+                             <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.status}</td>
+                             <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.enteredAt}</td>
+                             <td className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-900">{row.qaDays.toFixed(2)}</td>
+                             <td className="border border-slate-200 px-3 py-2 text-center">
+                               <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${row.ongoing ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                 {row.ongoing ? 'En QC' : 'Cerrado'}
+                               </span>
+                             </td>
+                           </tr>
+                         ))
+                     ) : (
+                       <tr className="bg-white">
+                         <td colSpan={7} className="border border-slate-200 px-3 py-6 text-center text-slate-500">No hay órdenes con permanencia en QC para el período filtrado.</td>
+                       </tr>
+                     )}
+                   </tbody>
+                 </table>
+               </div>
+               {/* Paginación */}
+               {qaOperationalMetrics.topQaAgingRows.length > QA_AGING_PAGE_SIZE && (
+                 <Flex justifyContent="between" alignItems="center" className="mt-4 px-1">
+                   <Text className="text-xs text-slate-500">
+                     {qaAgingPage * QA_AGING_PAGE_SIZE + 1}–{Math.min((qaAgingPage + 1) * QA_AGING_PAGE_SIZE, qaOperationalMetrics.topQaAgingRows.length)} de {qaOperationalMetrics.topQaAgingRows.length} órdenes
+                   </Text>
+                   <Flex className="gap-2">
+                     <button
+                       type="button"
+                       disabled={qaAgingPage === 0}
+                       onClick={() => setQaAgingPage((p) => p - 1)}
+                       className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                     >← Anterior</button>
+                     <button
+                       type="button"
+                       disabled={(qaAgingPage + 1) * QA_AGING_PAGE_SIZE >= qaOperationalMetrics.topQaAgingRows.length}
+                       onClick={() => setQaAgingPage((p) => p + 1)}
+                       className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                     >Siguiente →</button>
+                   </Flex>
+                 </Flex>
+               )}
+             </Card>
+
+             {/* Salida desde QC/Listo hacia Entrega */}
+             <Card className="mt-6">
+               <Title>Unidades que salen de Control de Calidad (Grupo Listo)</Title>
+               <Text className="mt-1 text-xs text-slate-500">Filtra por fecha para saber cuántos equipos pasaron por Control y cuántos fueron aprobados/salieron a Entrega.</Text>
+
+               <Flex justifyContent="between" alignItems="end" className="mt-4 gap-3 flex-wrap">
+                 <div className="flex items-end gap-2 flex-wrap">
+                   <div>
+                     <Text className="text-xs text-slate-500 mb-1">Desde</Text>
+                     <input
+                       type="date"
+                       value={selectedQcFromDate}
+                       onChange={(e) => setSelectedQcFromDate(e.target.value)}
+                       className="h-9 rounded-lg border border-slate-200 px-3 text-sm text-slate-700"
+                     />
+                   </div>
+                   <div>
+                     <Text className="text-xs text-slate-500 mb-1">Hasta</Text>
+                     <input
+                       type="date"
+                       value={selectedQcToDate}
+                       onChange={(e) => setSelectedQcToDate(e.target.value)}
+                       className="h-9 rounded-lg border border-slate-200 px-3 text-sm text-slate-700"
+                     />
+                   </div>
+                   <button
+                     type="button"
+                     onClick={() => {
+                       setSelectedQcFromDate('');
+                       setSelectedQcToDate('');
+                     }}
+                     className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                   >Limpiar</button>
+                 </div>
+                 <Text className="text-xs text-slate-500">Detalle mostrado: {qaListoToEntregaMetrics.rows.length} OS</Text>
+               </Flex>
+
+               <Grid numItemsSm={1} numItemsLg={4} className="gap-6 mt-4">
+                 <Card decoration="top" decorationColor="cyan">
+                   <Text className="text-slate-500">Unidades Listo → Entrega</Text>
+                   <Metric>{qaListoToEntregaMetrics.units}</Metric>
+                   <Text className="mt-2 text-xs text-slate-500 font-medium">Transiciones detectadas por historial</Text>
+                 </Card>
+                 <Card decoration="top" decorationColor="emerald">
+                   <Text className="text-slate-500">Órdenes que pasaron por QC/Listo</Text>
+                   <Metric>{qaListoToEntregaMetrics.qaTouched}</Metric>
+                   <Text className="mt-2 text-xs text-slate-500 font-medium">Base para evaluar salida a Entrega</Text>
+                 </Card>
+                 <Card decoration="top" decorationColor="blue">
+                   <Text className="text-slate-500">Órdenes aprobadas</Text>
+                   <Metric>{qaListoToEntregaMetrics.approved}</Metric>
+                   <Text className="mt-2 text-xs text-slate-500 font-medium">Aprobadas y avanzadas a Entrega</Text>
+                 </Card>
+                 <Card decoration="top" decorationColor="indigo">
+                   <Text className="text-slate-500">% de salida desde QC/Listo</Text>
+                   <Metric>{qaListoToEntregaMetrics.rate}%</Metric>
+                   <Text className="mt-2 text-xs text-slate-500 font-medium">Unidades que sí avanzaron a Entrega</Text>
+                 </Card>
+               </Grid>
+
+               <div className="mt-5 overflow-x-auto">
+                 <table className="min-w-full border border-slate-200 text-sm">
+                   <thead className="bg-slate-100">
+                     <tr>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado del grupo Listo</th>
+                       <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Actualmente en estado</th>
+                       <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Cantidad que salió</th>
+                       <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">%</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {qaListoToEntregaMetrics.byListoStatus.map((row) => (
+                       <tr key={row.status} className="bg-white even:bg-slate-50">
+                         <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{row.status}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-right text-slate-700 font-semibold">{row.current}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-right text-cyan-700 font-semibold">{row.count}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-right text-slate-600">{qaListoToEntregaMetrics.units ? ((row.count / qaListoToEntregaMetrics.units) * 100).toFixed(1) : '0.0'}%</td>
+                       </tr>
+                     ))}
+                   </tbody>
+                 </table>
+               </div>
+
+               <div className="mt-5 overflow-x-auto">
+                 <table className="min-w-full border border-slate-200 text-sm">
+                   <thead className="bg-slate-100">
+                     <tr>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Equipo</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Técnico</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado Listo</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Pasó por Control</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Aprobado / Salió</th>
+                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado actual</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {qaListoToEntregaMetrics.rows.length ? qaListoToEntregaMetrics.rows.map((row) => (
+                       <tr key={row.id} className="bg-white even:bg-slate-50">
+                         <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{row.number}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.equipment}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.technician}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.listoStatus}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.controlAt}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.approvedAt}</td>
+                         <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.status}</td>
+                       </tr>
+                     )) : (
+                       <tr className="bg-white">
+                         <td colSpan={7} className="border border-slate-200 px-3 py-6 text-center text-slate-500">Sin movimientos de Control/Aprobación en el rango seleccionado.</td>
+                       </tr>
+                     )}
+                   </tbody>
+                 </table>
+               </div>
              </Card>
           </TabPanel>
 
@@ -4632,6 +7101,743 @@ export default function DashboardMultimodular() {
                </div>
              </Card>
           </TabPanel>
+
+          {/* --- PESTAÑA 7: SUBIR CLAIMS --- */}
+          <TabPanel>
+            <Card className="mb-6">
+              <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
+                <div>
+                  <Title>Generador de Claims · MVP</Title>
+                  <Text className="mt-1 text-xs text-slate-500">Embudo operativo: filtro de marca/estado, semáforo, traductor de códigos y plantilla final para carga en portal ISP.</Text>
+                </div>
+                <Flex className="gap-2 flex-wrap">
+                  <Select value={selectedClaimGeneratorBrand} onValueChange={(value) => setSelectedClaimGeneratorBrand(value as 'XIAOMI' | 'TCL' | 'ALCATEL')} className="w-[170px]">
+                    <SelectItem value="XIAOMI">Xiaomi</SelectItem>
+                    <SelectItem value="TCL">TCL</SelectItem>
+                    <SelectItem value="ALCATEL">Alcatel</SelectItem>
+                  </Select>
+                  <button
+                    type="button"
+                    onClick={handleDownloadClaimsTemplate}
+                    className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                  >
+                    Descargar template {claimsTemplateDownloadRows.length ? '(con datos)' : '(vacío)'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadClaimsTemplateEmpty}
+                    className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50"
+                  >
+                    Descargar solo encabezados
+                  </button>
+                  <Badge color="amber">Filas para exportar: {claimsTemplateDownloadRows.length}</Badge>
+                  <Badge color="indigo">Template: {claimsGeneratorConfig.template}</Badge>
+                  <Badge color="blue">Lógica: {claimsGeneratorConfig.codingLogic}</Badge>
+                  <Badge color="emerald">Columnas: {CLAIM_UPLOAD_TEMPLATE_COLUMNS.length}</Badge>
+                </Flex>
+              </Flex>
+            </Card>
+
+            <Grid numItemsSm={1} numItemsLg={4} className="gap-6 mb-6">
+              <Card decoration="top" decorationColor="blue">
+                <Text className="text-slate-500 uppercase text-xs">Órdenes candidatas</Text>
+                <Metric>{claimsGeneratorSummary.total}</Metric>
+                <Text className="mt-2 text-xs text-slate-500">Marca + estado de QA/Control en período activo</Text>
+              </Card>
+              <Card decoration="top" decorationColor="emerald">
+                <Text className="text-slate-500 uppercase text-xs">Semáforo verde</Text>
+                <Metric>{claimsGeneratorSummary.validRows}</Metric>
+                <ProgressBar
+                  className="mt-4"
+                  value={claimsGeneratorSummary.total ? (claimsGeneratorSummary.validRows / claimsGeneratorSummary.total) * 100 : 0}
+                  color="emerald"
+                />
+              </Card>
+              <Card decoration="top" decorationColor="rose">
+                <Text className="text-slate-500 uppercase text-xs">Semáforo rojo</Text>
+                <Metric>{claimsGeneratorSummary.incompleteRows}</Metric>
+                <Text className="mt-2 text-xs text-rose-600">Registros con faltantes críticos</Text>
+              </Card>
+              <Card decoration="top" decorationColor="amber">
+                <Text className="text-slate-500 uppercase text-xs">Reglas auto aplicadas</Text>
+                <Metric>{claimsGeneratorSummary.autoFilledRepairStart + claimsGeneratorSummary.autoDetectedL1 + claimsGeneratorSummary.autoDetectedL3Fallback}</Metric>
+                <Text className="mt-2 text-xs text-slate-500">Repair start + método + L3 fallback</Text>
+              </Card>
+            </Grid>
+
+            <TabGroup>
+              <TabList variant="solid" className="mb-4">
+                <Tab>① Semáforo</Tab>
+                <Tab>② Traductor</Tab>
+                <Tab>③ Reglas Auto</Tab>
+                <Tab>④ Template 68</Tab>
+              </TabList>
+
+              <TabPanels>
+                <TabPanel>
+                  <Grid numItemsLg={2} className="gap-6">
+                    <Card>
+                      <Title>Validación de campos críticos</Title>
+                      <Text className="mt-1 text-xs text-slate-500">Verde: completo. Rojo: faltan IMEI, GoodsID o fecha de venta.</Text>
+                      <div className="mt-4 overflow-x-auto">
+                        <table className="min-w-full border border-slate-200 text-sm">
+                          <thead className="bg-slate-100">
+                            <tr>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Campo faltante</th>
+                              <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Casos</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {claimsGeneratorSummary.missingByField.length ? claimsGeneratorSummary.missingByField.map((row) => (
+                              <tr key={row.field} className="bg-white even:bg-slate-50">
+                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.field}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-right text-rose-700 font-semibold">{row.count}</td>
+                              </tr>
+                            )) : (
+                              <tr className="bg-white">
+                                <td colSpan={2} className="border border-slate-200 px-3 py-6 text-center text-emerald-700">Todos los registros cumplen campos críticos.</td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                    <Card>
+                      <Title>Muestra de órdenes para carga</Title>
+                      <Text className="mt-1 text-xs text-slate-500">Estado por orden previo a exportación.</Text>
+                      <div className="mt-4 overflow-x-auto max-h-[360px]">
+                        <table className="min-w-full border border-slate-200 text-sm">
+                          <thead className="bg-slate-100 sticky top-0">
+                            <tr>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Modelo</th>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Semáforo</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {claimsGeneratorRows.slice(0, 20).map((row) => (
+                              <tr key={`${row.os}-${row.imei || 'na'}`} className="bg-white even:bg-slate-50">
+                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.os}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.model}</td>
+                                <td className="border border-slate-200 px-3 py-2">
+                                  <Badge color={row.missingFields.length ? 'rose' : 'emerald'}>
+                                    {row.missingFields.length ? `Rojo · faltan ${row.missingFields.join(', ')}` : 'Verde · listo'}
+                                  </Badge>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  </Grid>
+                </TabPanel>
+
+                <TabPanel>
+                  <Card>
+                    <Title>Tabla maestra de mapeo (Español → ISP)</Title>
+                    <Text className="mt-1 text-xs text-slate-500">Top 10 mapeos operativos más frecuentes para normalizar diagnóstico hacia código ISP.</Text>
+                    <div className="mt-4 overflow-x-auto">
+                      <table className="min-w-full border border-slate-200 text-sm">
+                        <thead className="bg-slate-100">
+                          <tr>
+                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Descripción Orderry</th>
+                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Código ISP</th>
+                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Categoría</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {CLAIM_MVP_FAULT_MAP.map((row, index) => (
+                            <tr key={`${row.ispCode}-${row.source}-${index}`} className="bg-white even:bg-slate-50">
+                              <td className="border border-slate-200 px-3 py-2">{row.source}</td>
+                              <td className="border border-slate-200 px-3 py-2 font-semibold text-blue-700">{row.ispCode}</td>
+                              <td className="border border-slate-200 px-3 py-2">{row.category}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                </TabPanel>
+
+                <TabPanel>
+                  <Grid numItemsLg={2} className="gap-6">
+                    <Card>
+                      <Title>Reglas automáticas activas</Title>
+                      <div className="mt-4 space-y-3">
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <Text className="text-sm font-semibold text-slate-800">1) Tiempos SLA (TAT Xiaomi)</Text>
+                          <Text className="text-xs text-slate-600 mt-1">Repair_Start = Create + 48h; Repair_Finish y Close = Repair_Start + 24h.</Text>
+                          <Badge color="blue" className="mt-2">Aplicadas: {claimsGeneratorSummary.autoFilledRepairStart}</Badge>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <Text className="text-sm font-semibold text-slate-800">2) Processing_method_code faltante</Text>
+                          <Text className="text-xs text-slate-600 mt-1">Sin repuestos = 3001; con repuestos = 5001; mainboard = 5101.</Text>
+                          <Badge color="indigo" className="mt-2">Inspección (3001): {claimsGeneratorSummary.autoDetectedL1}</Badge>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <Text className="text-sm font-semibold text-slate-800">3) Level_3_malfunction_code faltante</Text>
+                          <Text className="text-xs text-slate-600 mt-1">Se infiere por palabras clave del diagnóstico técnico.</Text>
+                          <Badge color="amber" className="mt-2">Fallback MP099: {claimsGeneratorSummary.autoDetectedL3Fallback}</Badge>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <Text className="text-sm font-semibold text-slate-800">4) Constantes obligatorias</Text>
+                          <Text className="text-xs text-slate-600 mt-1">Se inyectan ISP_SC_code, service_center_code, service_mode y customer_email default.</Text>
+                          <Badge color="emerald" className="mt-2">ISP_SC_code = GTM00010</Badge>
+                        </div>
+                      </div>
+                    </Card>
+
+                    <Card>
+                      <Title>Preview transformado por orden</Title>
+                      <Text className="mt-1 text-xs text-slate-500">Vista simplificada del resultado que alimenta el archivo de subida.</Text>
+                      <div className="mt-4 overflow-x-auto max-h-[430px]">
+                        <table className="min-w-full border border-slate-200 text-sm">
+                          <thead className="bg-slate-100 sticky top-0">
+                            <tr>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">IMEI/SN</th>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Método</th>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">L3 Code</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {claimsGeneratorRows.slice(0, 25).map((row) => (
+                              <tr key={`${row.os}-${row.l3MalfunctionCode}`} className="bg-white even:bg-slate-50">
+                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.os}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.imei || 'Sin IMEI'}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.processingMethodCode}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-blue-700 font-semibold">{row.l3MalfunctionCode}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  </Grid>
+                </TabPanel>
+
+                <TabPanel>
+                  <Grid numItemsLg={2} className="gap-6">
+                    <Card>
+                      <Title>Columnas exactas del template</Title>
+                      <Text className="mt-1 text-xs text-slate-500">Este bloque ya usa los encabezados reales que compartiste para la carga ISP.</Text>
+                      <div className="mt-4 overflow-x-auto">
+                        <table className="min-w-full border border-slate-200 text-sm">
+                          <thead className="bg-slate-100">
+                            <tr>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Campo</th>
+                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((field) => (
+                              <tr key={field} className="bg-white even:bg-slate-50">
+                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{field}</td>
+                                <td className="border border-slate-200 px-3 py-2">
+                                  <Badge color={CLAIM_TEMPLATE_CRITICAL_FIELDS.includes(field as typeof CLAIM_TEMPLATE_CRITICAL_FIELDS[number]) ? 'amber' : 'emerald'}>
+                                    {CLAIM_TEMPLATE_CRITICAL_FIELDS.includes(field as typeof CLAIM_TEMPLATE_CRITICAL_FIELDS[number]) ? 'Crítico / validar' : 'Mapeado o vacío controlado'}
+                                  </Badge>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="mt-4 flex gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={handleDownloadClaimsTemplate}
+                          className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                        >
+                          Descargar template CSV (con datos)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDownloadClaimsTemplateEmpty}
+                          className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50"
+                        >
+                          Descargar template vacío
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+                              navigator.clipboard.writeText(claimsPythonPrompt);
+                            }
+                          }}
+                          className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                        >
+                          Copiar prompt Python
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+                              navigator.clipboard.writeText(XIAOMI_CLASSIFICATION_PROMPTS.base);
+                            }
+                          }}
+                          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                        >
+                          Copiar prompt Base (JSON)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+                              navigator.clipboard.writeText(XIAOMI_CLASSIFICATION_PROMPTS.business);
+                            }
+                          }}
+                          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                        >
+                          Copiar prompt Negocio
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+                              navigator.clipboard.writeText(XIAOMI_CLASSIFICATION_PROMPTS.confidence);
+                            }
+                          }}
+                          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                        >
+                          Copiar prompt Confianza
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+                              navigator.clipboard.writeText(XIAOMI_CLASSIFICATION_PROMPTS.production);
+                            }
+                          }}
+                          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                        >
+                          Copiar prompt Producción
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof window !== 'undefined') {
+                              window.alert('Siguiente paso: ejecutar el script Python con tus 3 archivos reales para generar el .xlsx/.csv de carga ISP.');
+                            }
+                          }}
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          Generar script Python completo
+                        </button>
+                      </div>
+                    </Card>
+
+                    <Card>
+                      <Title>Preview del template con datos</Title>
+                      <Text className="mt-1 text-xs text-slate-500">Se muestran las primeras órdenes ya preparadas con tus encabezados reales. Puedes desplazarte horizontalmente para ver todo el layout.</Text>
+                      <div className="mt-4 overflow-x-auto max-h-[520px] rounded-xl border border-slate-200">
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-slate-100 sticky top-0">
+                            <tr>
+                              {CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((column) => (
+                                <th key={column} className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700 whitespace-nowrap">{column}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {claimsTemplateDownloadRows.slice(0, 5).map((row, index) => (
+                              <tr key={`template-row-${index}`} className="bg-white even:bg-slate-50">
+                                {CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((column) => (
+                                  <td key={`${index}-${column}`} className="border border-slate-200 px-3 py-2 text-slate-700 whitespace-nowrap">{row[column] || ''}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  </Grid>
+                </TabPanel>
+              </TabPanels>
+            </TabGroup>
+          </TabPanel>
+
+          {/* ─── PESTAÑA 8: MÓDULO DE BONO TÉCNICO ─────────────────────── */}
+          <TabPanel>
+            {/* Header */}
+            <Card className="mb-6">
+              <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
+                <div>
+                  <Title>Módulo de Bono Técnico · TechComm Wireless</Title>
+                  <Text className="mt-1 text-xs text-slate-500">
+                    Incentivo por producción excedente. Solo cuenta órdenes en estado Control de Calidad. Meta mínima diaria antes de generar bono.
+                  </Text>
+                </div>
+                <Flex className="gap-2 flex-wrap">
+                  <Badge color="blue">Órdenes Entrega+Listo: {bonusRawRows.length}</Badge>
+                  <Badge color={bonusSummary.techsWithSurplus > 0 ? 'emerald' : 'slate'}>
+                    Técnicos con excedente: {bonusSummary.techsWithSurplus}
+                  </Badge>
+                  <Badge color="amber">Total unidades filtradas: {bonusSummary.totalUnits}</Badge>
+                </Flex>
+              </Flex>
+            </Card>
+
+            {/* Filtros */}
+            <Card className="mb-6">
+              <Flex justifyContent="start" alignItems="end" className="gap-4 flex-wrap">
+                <div>
+                  <Text className="text-xs text-slate-500 mb-1">Fecha</Text>
+                  <input
+                    type="date"
+                    value={selectedBonusDate}
+                    onChange={(e) => setSelectedBonusDate(e.target.value)}
+                    className="h-9 rounded-lg border border-slate-200 px-3 text-sm text-slate-700"
+                  />
+                </div>
+                <div>
+                  <Text className="text-xs text-slate-500 mb-1">Técnico</Text>
+                  <Select value={selectedBonusTechnician} onValueChange={setSelectedBonusTechnician} className="w-[220px]">
+                    <SelectItem value="ALL">Todos los técnicos</SelectItem>
+                    {availableTechnicians.map((t) => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
+                  </Select>
+                </div>
+                <div>
+                  <Text className="text-xs text-slate-500 mb-1">Línea de Producto</Text>
+                  <Select value={selectedBonusLine} onValueChange={setSelectedBonusLine} className="w-[220px]">
+                    <SelectItem value="ALL">Todas las líneas</SelectItem>
+                    {BONUS_METRICS_CONFIG.map((c) => (
+                      <SelectItem key={c.line} value={c.line}>{c.line}</SelectItem>
+                    ))}
+                  </Select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setSelectedBonusDate(''); setSelectedBonusTechnician('ALL'); setSelectedBonusLine('ALL'); }}
+                  className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                >Limpiar filtros</button>
+              </Flex>
+            </Card>
+
+            {/* KPI cards */}
+            <Grid numItemsSm={2} numItemsLg={4} className="gap-6 mb-6">
+              <Card decoration="top" decorationColor="indigo">
+                <Text className="text-slate-500 uppercase text-xs">Incentivo Total del Día</Text>
+                <Metric>Q {bonusSummary.totalIncentive.toFixed(2)}</Metric>
+                <Text className="mt-2 text-xs text-slate-500">Suma de excedentes liquidados en período filtrado</Text>
+              </Card>
+              <Card decoration="top" decorationColor="emerald">
+                <Text className="text-slate-500 uppercase text-xs">Técnicos con Excedente</Text>
+                <Metric>{bonusSummary.techsWithSurplus}</Metric>
+                <Text className="mt-2 text-xs text-slate-500">Superaron su meta diaria</Text>
+              </Card>
+              <Card decoration="top" decorationColor="amber">
+                <Text className="text-slate-500 uppercase text-xs">Unidades Excedentes Netas</Text>
+                <Metric>{bonusSummary.totalSurplusUnits}</Metric>
+                <Text className="mt-2 text-xs text-slate-500">Por encima de la meta acumulada</Text>
+              </Card>
+              <Card decoration="top" decorationColor="blue">
+                <Text className="text-slate-500 uppercase text-xs">Total Unidades Procesadas</Text>
+                <Metric>{bonusSummary.totalUnits}</Metric>
+                <Text className="mt-2 text-xs text-slate-500">Órdenes en Control de Calidad</Text>
+              </Card>
+            </Grid>
+
+            {/* ── Producción en Control de Calidad ── */}
+            <Card className="mb-6">
+              <Flex justifyContent="between" alignItems="center" className="mb-4 gap-3 flex-wrap">
+                <div>
+                  <Title>Producción en Control de Calidad por Ejecutor</Title>
+                  <Text className="text-xs text-slate-500 mt-1">
+                    Órdenes enviadas a CQ por día y técnico. Ponderada = L0×15% + L1×25% + L2×60%. Verde = cumple meta, rojo = no cumple.
+                  </Text>
+                </div>
+                <Badge color="cyan">
+                  {bonusQcAggregates.filter((r) =>
+                    (!selectedBonusDate || r.date === selectedBonusDate) &&
+                    (selectedBonusTechnician === 'ALL' || r.technician === selectedBonusTechnician) &&
+                    (selectedBonusLine === 'ALL' || r.productLine === selectedBonusLine)
+                  ).length} registros
+                </Badge>
+              </Flex>
+              <div className="overflow-x-auto">
+                <table className="min-w-full border border-slate-200 text-sm">
+                  <thead className="bg-slate-100">
+                    <tr>
+                      <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Fecha</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Ejecutor</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Línea</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-500">L0</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-indigo-700">L1</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-blue-700">L2</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Total</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-purple-700">Ponderada</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Meta</th>
+                      <th className="border border-slate-200 px-3 py-2 text-center font-semibold text-slate-700">¿Cumple?</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bonusQcAggregates.filter((r) =>
+                      (!selectedBonusDate || r.date === selectedBonusDate) &&
+                      (selectedBonusTechnician === 'ALL' || r.technician === selectedBonusTechnician) &&
+                      (selectedBonusLine === 'ALL' || r.productLine === selectedBonusLine)
+                    ).length > 0 ? (
+                      bonusQcAggregates
+                        .filter((r) =>
+                          (!selectedBonusDate || r.date === selectedBonusDate) &&
+                          (selectedBonusTechnician === 'ALL' || r.technician === selectedBonusTechnician) &&
+                          (selectedBonusLine === 'ALL' || r.productLine === selectedBonusLine)
+                        )
+                        .map((row, i) => (
+                          <tr key={i} className="bg-white even:bg-slate-50">
+                            <td className="border border-slate-200 px-3 py-2 text-slate-600">{row.date}</td>
+                            <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.technician}</td>
+                            <td className="border border-slate-200 px-3 py-2">
+                              <Badge color={
+                                row.productLine === 'MOVILES' ? 'blue' :
+                                row.productLine === 'SCOOTER' ? 'emerald' :
+                                row.productLine === 'ASPIRADORAS' ? 'cyan' : 'orange'
+                              }>{row.productLine}</Badge>
+                            </td>
+                            <td className="border border-slate-200 px-3 py-2 text-right text-slate-500">{row.l0}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-right text-indigo-700 font-semibold">{row.l1}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-right text-blue-700 font-semibold">{row.l2}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-right font-bold text-slate-900">{row.total}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-right font-bold text-purple-700">{row.weighted.toFixed(2)}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-right text-slate-600">{row.quota}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-center">
+                              {row.meetsQuota ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-300 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                                  ✓ Sí
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-red-50 border border-red-300 px-2 py-0.5 text-xs font-semibold text-red-700">
+                                  ✗ No ({(row.quota - row.weighted).toFixed(2)} faltan)
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                    ) : (
+                      <tr className="bg-white">
+                        <td colSpan={10} className="border border-slate-200 px-3 py-8 text-center text-slate-500">
+                          No hay órdenes en Control de Calidad para los filtros seleccionados.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Chart + config matrix side by side */}
+            {/* Charts row: incentive + units repaired */}
+            {bonusSummary.byTechnician.length > 0 && (
+              <Grid numItemsLg={2} className="gap-6 mb-6">
+                <Card>
+                  <Title>Incentivo por Técnico (Q)</Title>
+                  <Text className="mt-1 text-xs text-slate-500">Bono acumulado en el período filtrado.</Text>
+                  <BarChart
+                    className="mt-4 h-64"
+                    data={bonusSummary.byTechnician}
+                    index="name"
+                    categories={['incentive']}
+                    colors={['indigo']}
+                    layout="vertical"
+                    yAxisWidth={180}
+                    valueFormatter={(v) => `Q ${v.toFixed(2)}`}
+                  />
+                </Card>
+                <Card>
+                  <Title>Unidades Reparadas por Técnico</Title>
+                  <Text className="mt-1 text-xs text-slate-500">Total de unidades en Control de Calidad en el período filtrado.</Text>
+                  <BarChart
+                    className="mt-4 h-64"
+                    data={bonusSummary.byTechnician}
+                    index="name"
+                    categories={['units']}
+                    colors={['emerald']}
+                    layout="vertical"
+                    yAxisWidth={180}
+                    valueFormatter={(v) => `${v} uds`}
+                  />
+                </Card>
+              </Grid>
+            )}
+            {bonusSummary.byTechnician.length === 0 && (
+              <Card className="mb-6">
+                <Text className="text-sm text-slate-400 text-center py-8">Sin datos en el período seleccionado.</Text>
+              </Card>
+            )}
+            <div className="mb-6">
+              <Card>
+                <Title>CONFIG_METRICAS — Referencia</Title>
+                <Text className="mt-1 text-xs text-slate-500">Cuotas ponderadas y tarifas por rol y línea (Q). Peso: L0=15% · L1=25% · L2=60%.</Text>
+                <div className="mt-4 overflow-x-auto">
+                  <table className="min-w-full border border-slate-200 text-xs">
+                    <thead className="bg-slate-100">
+                      <tr>
+                        <th className="border border-slate-200 px-2 py-2 text-left font-semibold text-slate-700">Línea</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-slate-700">Meta</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-amber-700">Técnico L1</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-amber-800">Técnico L2</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-blue-600">CQ L1</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-blue-700">CQ L2</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-slate-500">Back L1</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-slate-600">Back L2</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-slate-400">Bod L1</th>
+                        <th className="border border-slate-200 px-2 py-2 text-right font-semibold text-slate-500">Bod L2</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {BONUS_METRICS_CONFIG.map((cfg) => (
+                        <tr key={cfg.line} className="bg-white even:bg-slate-50">
+                          <td className="border border-slate-200 px-2 py-2 font-semibold text-slate-800">{cfg.line}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right font-bold text-slate-700">{cfg.dailyQuota}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right text-amber-700">Q{cfg.rates.tecnico.l1.toFixed(2)}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right font-semibold text-amber-800">Q{cfg.rates.tecnico.l2.toFixed(2)}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right text-blue-600">Q{cfg.rates.cq.l1.toFixed(2)}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right text-blue-700">Q{cfg.rates.cq.l2.toFixed(2)}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right text-slate-500">Q{cfg.rates.backoffice.l1.toFixed(2)}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right text-slate-600">Q{cfg.rates.backoffice.l2.toFixed(2)}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right text-slate-400">Q{cfg.rates.bodega.l1.toFixed(2)}</td>
+                          <td className="border border-slate-200 px-2 py-2 text-right text-slate-500">Q{cfg.rates.bodega.l2.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 p-3">
+                  <Text className="text-xs font-semibold text-amber-800">Regla de cálculo (según el peso se paga)</Text>
+                  <Text className="text-xs text-amber-700 mt-1">
+                    1. Producción ponderada = L0×0.15 + L1×0.25 + L2×0.60.<br/>
+                    2. Si Ponderada &gt; Meta → Excedente ponderado = Ponderada − Meta.<br/>
+                    3. Convertir excedente a unidades físicas: L2 primero (÷0.60), luego L1 (÷0.25).<br/>
+                    4. Incentivo = Excedente_L2_físico × Tarifa_L2 + Excedente_L1_físico × Tarifa_L1.<br/>
+                    5. L0 (DOA/NC) pesa 0.15 hacia la meta pero no genera bono.
+                  </Text>
+                </div>
+              </Card>
+            </div>
+
+            {/* Detalle diario */}
+            <Card>
+              <Flex justifyContent="between" alignItems="center" className="mb-4 gap-3 flex-wrap">
+                <div>
+                  <Title>Detalle Diario por Técnico y Línea</Title>
+                  <Text className="text-xs text-slate-500 mt-1">Registro de producción: L0 = Diagnóstico/NC, L1 = Software, L2 = Mecánica/Hardware.</Text>
+                </div>
+                <Badge color="slate">{bonusFilteredRows.length} registros</Badge>
+              </Flex>
+              <div className="overflow-x-auto">
+                <table className="min-w-full border border-slate-200 text-sm">
+                  <thead className="bg-slate-100">
+                    <tr>
+                      <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Fecha</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Técnico (Ejecutor)</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Línea</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-500">L0 NC/DOA</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-indigo-700">L1 SW</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-blue-700">L2 HW</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Total</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Meta</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-amber-700">Excedente</th>
+                      <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-emerald-700">Incentivo (Q)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bonusFilteredRows.length ? bonusFilteredRows.map((row, idx) => (
+                      <tr key={`${row.date}-${row.technician}-${row.productLine}-${idx}`} className="bg-white even:bg-slate-50">
+                        <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{row.date}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.technician}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-slate-700">
+                          <Badge color={
+                            row.productLine === 'MOVILES' ? 'blue' :
+                            row.productLine === 'SCOOTER' ? 'emerald' :
+                            row.productLine === 'ASPIRADORAS' ? 'cyan' : 'orange'
+                          }>
+                            {row.productLine}
+                          </Badge>
+                        </td>
+                        <td className="border border-slate-200 px-3 py-2 text-right text-slate-500">{row.l0}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-right text-indigo-700 font-semibold">{row.l1}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-right text-blue-700 font-semibold">{row.l2}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-right font-bold text-slate-900">{row.total}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-right text-slate-600">{row.quota}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-right">
+                          <span className={`font-semibold ${row.surplusWeighted > 0 ? 'text-amber-700' : 'text-slate-400'}`}>
+                            {row.surplusWeighted > 0 ? `+${(row.surplusL2 + row.surplusL1).toFixed(2)}` : '0'}
+                          </span>
+                        </td>
+                        <td className="border border-slate-200 px-3 py-2 text-right">
+                          <span className={`font-bold ${row.incentive > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
+                            {row.incentive > 0 ? `Q ${row.incentive.toFixed(2)}` : '—'}
+                          </span>
+                        </td>
+                      </tr>
+                    )) : (
+                      <tr className="bg-white">
+                        <td colSpan={10} className="border border-slate-200 px-3 py-8 text-center text-slate-500">
+                          {bonusRawRows.length === 0
+                            ? 'No hay órdenes con Entrega y Listo el mismo día. Verifica la conexión con Orderry.'
+                            : 'No hay registros para los filtros seleccionados.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                  {bonusFilteredRows.length > 0 && (
+                    <tfoot>
+                      <tr className="bg-slate-100">
+                        <td colSpan={6} className="border border-slate-200 px-3 py-2 font-bold text-slate-700 text-right">TOTALES</td>
+                        <td className="border border-slate-200 px-3 py-2 text-right font-bold text-slate-900">{bonusSummary.totalUnits}</td>
+                        <td className="border border-slate-200 px-3 py-2"></td>
+                        <td className="border border-slate-200 px-3 py-2 text-right font-bold text-amber-700">+{bonusSummary.totalSurplusUnits}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-right font-bold text-emerald-700">Q {bonusSummary.totalIncentive.toFixed(2)}</td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </Card>
+
+            {/* Resumen acumulado por técnico */}
+            {bonusSummary.byTechnician.length > 0 && (
+              <Card className="mt-6">
+                <Title>Resumen Acumulado por Técnico</Title>
+                <Text className="mt-1 text-xs text-slate-500">Total de bono generado, unidades producidas y excedentes en el período filtrado.</Text>
+                <div className="mt-4 overflow-x-auto">
+                  <table className="min-w-full border border-slate-200 text-sm">
+                    <thead className="bg-slate-100">
+                      <tr>
+                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Técnico</th>
+                        <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Total Unidades</th>
+                        <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-amber-700">Unidades Excedentes</th>
+                        <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-emerald-700">Incentivo Total (Q)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bonusSummary.byTechnician.map((row) => (
+                        <tr key={row.name} className="bg-white even:bg-slate-50">
+                          <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.name}</td>
+                          <td className="border border-slate-200 px-3 py-2 text-right text-slate-700 font-semibold">{row.units}</td>
+                          <td className="border border-slate-200 px-3 py-2 text-right">
+                            <span className={`font-semibold ${row.surplus > 0 ? 'text-amber-700' : 'text-slate-400'}`}>
+                              {row.surplus > 0 ? `+${row.surplus}` : '—'}
+                            </span>
+                          </td>
+                          <td className="border border-slate-200 px-3 py-2 text-right">
+                            <span className={`font-bold ${row.incentive > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
+                              {row.incentive > 0 ? `Q ${row.incentive.toFixed(2)}` : '—'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
+          </TabPanel>
+
         </TabPanels>
       </TabGroup>
     </div>
