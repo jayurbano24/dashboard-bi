@@ -1,83 +1,59 @@
-/**
- * POST /api/despacho/save-sheet
- * Saves a completed conduce to Google Sheets via Apps Script webhook.
- * Falls back to authenticated google-spreadsheet library if Apps Script URL not set.
- */
-
 import { NextResponse } from 'next/server';
-import { saveDespachoConduce } from '@/lib/google-sheets';
+import { deleteDespachoConduce, getDespachoConduces, saveDespachoConduce } from '@/lib/supabase-store';
+import { createClient } from '@/lib/supabase/server';
 
-const APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || '';
+export async function GET(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const page = Number(searchParams.get('page') || '1');
+    const pageSize = Number(searchParams.get('pageSize') || '20');
+    const result = await getDespachoConduces({ page, pageSize });
+    return NextResponse.json({ ok: true, ...result, via: 'supabase' });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message ?? 'Error al leer historial de Supabase.' }, { status: 500 });
+  }
+}
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-
-    if (!body?.id || !Array.isArray(body?.unidadesDespachadas)) {
-      return NextResponse.json({ error: 'Payload inválido — se requiere id y unidadesDespachadas.' }, { status: 400 });
-    }
-
-    // Path 1: Apps Script webhook (no service account needed)
-    if (APPS_SCRIPT_URL) {
-      const res = await fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveConduce', conduce: body }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        return NextResponse.json({ error: `Apps Script error: ${text}` }, { status: 500 });
-      }
-      return NextResponse.json({ ok: true, rows: body.unidadesDespachadas.length, via: 'apps-script' });
-    }
-
-    // Path 2: Authenticated service account
-    if (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
-      await saveDespachoConduce(body);
-      return NextResponse.json({ ok: true, rows: body.unidadesDespachadas.length, via: 'service-account' });
-    }
-
-    return NextResponse.json(
-      { error: 'Sin método de escritura configurado. Agrega GOOGLE_APPS_SCRIPT_URL o credenciales de cuenta de servicio en .env.local' },
-      { status: 500 }
-    );
+    const rows = await saveDespachoConduce(body);
+    return NextResponse.json({ ok: true, rows, via: 'supabase' });
   } catch (err: any) {
-    console.error('[save-sheet]', err);
-    return NextResponse.json({ error: err?.message ?? 'Error al guardar en Sheets.' }, { status: 500 });
+    if (err?.code === 'DUPLICATE_CONDUCE') {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    return NextResponse.json({ error: err?.message ?? 'Error al guardar en Supabase.' }, { status: 500 });
   }
 }
 
-/**
- * DELETE /api/despacho/save-sheet
- * Body: { id: string }  — elimina todas las filas del conduce en Google Sheets
- */
 export async function DELETE(request: Request) {
   try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'No autenticado.' }, { status: 401 });
+    }
+
+    const { data: roleData, error: roleError } = await supabase.rpc('get_my_role');
+    if (roleError) {
+      return NextResponse.json({ error: 'No se pudo validar el rol.' }, { status: 500 });
+    }
+
+    if (String(roleData || '').toLowerCase() !== 'admin') {
+      return NextResponse.json({ error: 'No autorizado.' }, { status: 403 });
+    }
+
     const body = await request.json();
     const conduceId: string = body?.id;
     if (!conduceId) {
       return NextResponse.json({ error: 'Se requiere id del conduce.' }, { status: 400 });
     }
 
-    if (!APPS_SCRIPT_URL) {
-      return NextResponse.json({ error: 'GOOGLE_APPS_SCRIPT_URL no configurada.' }, { status: 500 });
-    }
-
-    const res = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'deleteConduce', conduceId }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      return NextResponse.json({ error: `Apps Script error: ${text}` }, { status: 500 });
-    }
-
-    const data = await res.json();
-    return NextResponse.json({ ok: true, deleted: data.deleted ?? 0, via: 'apps-script' });
+    const deleted = await deleteDespachoConduce(conduceId);
+    return NextResponse.json({ ok: true, deleted, via: 'supabase' });
   } catch (err: any) {
-    console.error('[save-sheet DELETE]', err);
-    return NextResponse.json({ error: err?.message ?? 'Error al eliminar en Sheets.' }, { status: 500 });
+    return NextResponse.json({ error: err?.message ?? 'Error al eliminar en Supabase.' }, { status: 500 });
   }
 }
+

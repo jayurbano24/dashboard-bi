@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getBackofficePrealertRows } from '@/lib/google-sheets';
+import { getBackofficePrealertRows, getBackofficePrealertRowsFromGoogleSheets } from '@/lib/supabase-store';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -27,6 +27,32 @@ const normalizeText = (value: unknown) =>
     .replace(/[^A-Z0-9 ]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+const isClosedWonStatus = (order: GenericOrder) => {
+  const statusName = normalizeText(order?.status?.name);
+  const groupName = normalizeText(order?.status?.group?.name || order?.status_group?.name || order?.status_group_name);
+  const combined = `${statusName} ${groupName}`;
+
+  return (
+    combined.includes('GANAD') ||
+    combined.includes('ENTREGAD') ||
+    combined.includes('ARCHIVAD') ||
+    combined.includes('CERRAD') ||
+    combined.includes('ENTREGA') ||
+    combined.includes('DEVOLVER') ||
+    combined.includes('NOTA DE CREDITO')
+  );
+};
+
+const getClosedWonAtFromOrder = (order: GenericOrder | null) => {
+  if (!order) return null;
+  if (order?.done_at) return order.done_at;
+  if (order?.closed_at) return order.closed_at;
+  if (isClosedWonStatus(order)) {
+    return order?.modified_at || order?.updated_at || order?.created_at || null;
+  }
+  return null;
+};
 
 const uniqueKeys = (values: unknown[]) => {
   return Array.from(
@@ -64,6 +90,24 @@ const getOrderSearchText = (order: GenericOrder) => {
     ...Object.values(order?.custom_fields || {}),
   ].join(' '));
 };
+
+const getOrderAgencyText = (order: GenericOrder) =>
+  normalizeText([
+    order?.client?.name,
+    order?.branch?.name,
+    order?.location?.name,
+    order?.custom_fields?.agency,
+    order?.custom_fields?.tienda,
+  ].join(' '));
+
+const getOrderBrandModelText = (order: GenericOrder) =>
+  normalizeText([
+    order?.asset?.brand,
+    order?.asset?.model,
+    order?.asset?.title,
+    order?.name,
+    order?.device_name,
+  ].join(' '));
 
 const avg = (values: Array<number | null>) => {
   const usable = values.filter((value): value is number => typeof value === 'number' && !Number.isNaN(value));
@@ -174,8 +218,10 @@ const buildFallbackRowsFromOrders = (orders: GenericOrder[]) => {
   return orders.slice(0, 250).map((order) => {
     const requestAt = extractRequestAtFromOrder(order);
     const orderryAt = order?.created_at || null;
+    const closedWonAt = getClosedWonAtFromOrder(order);
     const systemHours = diffHours(requestAt, orderryAt);
     const systemDays = diffDays(requestAt, orderryAt);
+    const closedWonDays = diffDays(requestAt, closedWonAt);
 
     return {
       client: classifyClientFromOrder(order),
@@ -187,11 +233,14 @@ const buildFallbackRowsFromOrders = (orders: GenericOrder[]) => {
       requestAt,
       collectedAt: null,
       orderryAt,
+      closedWonAt,
       matchedOrderNumber: order?.number || '',
       matchMethod: 'Aceptado en Orderry',
       collectionHours: null,
       systemHours,
       systemDays,
+      closedWonDays,
+      historicalDetected: false,
       status: 'Aceptado',
     };
   });
@@ -205,7 +254,7 @@ const diffHours = (start: string | null, end: string | null) => {
 
   if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null;
 
-  return Number(((endDate.getTime() - startDate.getTime()) / 36e5).toFixed(1));
+  return Number(Math.abs((endDate.getTime() - startDate.getTime()) / 36e5).toFixed(1));
 };
 
 const diffDays = (start: string | null, end: string | null) => {
@@ -235,23 +284,40 @@ const isWithinBackofficeRange = (dateValue: string | null, range: string) => {
 const fetchAllOrderryOrders = async (): Promise<GenericOrder[]> => {
   const apiKey = process.env.ORDERRY_API_KEY;
   const baseUrl = process.env.ORDERRY_API_URL || 'https://api.orderry.com';
+  const maxPages = Number(process.env.BACKOFFICE_ORDERRY_MAX_PAGES || '4');
+  const maxTotalMs = Number(process.env.BACKOFFICE_ORDERRY_MAX_TOTAL_MS || '25000');
+  const perPageTimeoutMs = Number(process.env.BACKOFFICE_ORDERRY_PAGE_TIMEOUT_MS || '7000');
 
   if (!apiKey) return [];
 
   const allOrders: GenericOrder[] = [];
   let page = 1;
   let totalPages = 1;
+  const startedAt = Date.now();
 
   do {
+    if (Date.now() - startedAt >= maxTotalMs) break;
+
     const params = new URLSearchParams({ page: String(page), limit: '200' });
-    const response = await fetch(`${baseUrl}/v2/orders?${params.toString()}`, {
-      method: 'GET',
-      cache: 'no-store',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), perPageTimeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/v2/orders?${params.toString()}`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
+    } catch {
+      clearTimeout(timer);
+      break;
+    }
+    clearTimeout(timer);
 
     if (!response.ok) break;
 
@@ -260,7 +326,7 @@ const fetchAllOrderryOrders = async (): Promise<GenericOrder[]> => {
     allOrders.push(...rows);
     totalPages = Number(payload?.paging?.total_pages || 1);
     page += 1;
-  } while (page <= totalPages);
+  } while (page <= totalPages && page <= maxPages && Date.now() - startedAt < maxTotalMs);
 
   return allOrders;
 };
@@ -318,7 +384,13 @@ const findBestOrderMatch = (row: Record<string, any>, orderIndex: Map<string, Ge
   ].join(' '));
 
   const rowTokens = tokenizeText(identifierText);
-  if (!exactKeys.length && rowTokens.length < 2) return { order: null, method: '' };
+  const agencyTokens = tokenizeText(row.customer || row.raw?.agencia || row.raw?.agency || '').slice(0, 4);
+  const productTokens = tokenizeText(row.equipmentName || row.details || row.raw?.modelos || '').slice(0, 6);
+  const brandTokens = tokenizeText(row.raw?.marcas || row.equipmentName || '').slice(0, 3);
+  const modelTokens = tokenizeText(row.raw?.modelos || row.equipmentName || '').slice(0, 4);
+  if (!exactKeys.length && rowTokens.length < 2 && (agencyTokens.length < 1 || productTokens.length < 2)) {
+    return { order: null, method: '' };
+  }
 
   let bestOrder: GenericOrder | null = null;
   let bestScore = 0;
@@ -326,6 +398,8 @@ const findBestOrderMatch = (row: Record<string, any>, orderIndex: Map<string, Ge
 
   orders.forEach((order) => {
     const orderText = getOrderSearchText(order);
+    const agencyText = getOrderAgencyText(order);
+    const brandModelText = getOrderBrandModelText(order);
     let score = 0;
     let method = '';
 
@@ -353,6 +427,24 @@ const findBestOrderMatch = (row: Record<string, any>, orderIndex: Map<string, Ge
     if (overlap >= 2) {
       score += overlap * 2;
       method = method || 'Coincidencia por identificador';
+    }
+
+    // Fallback tolerante cuando cliente escribe mal IMEI/serie/folio:
+    // cruza por agencia + marca/modelo del equipo.
+    const agencyOverlap = agencyTokens.filter((token) => agencyText.includes(token) || orderText.includes(token)).length;
+    const productOverlap = productTokens.filter((token) => brandModelText.includes(token) || orderText.includes(token)).length;
+    const brandOverlap = brandTokens.filter((token) => brandModelText.includes(token)).length;
+    const modelOverlap = modelTokens.filter((token) => brandModelText.includes(token)).length;
+
+    if (agencyOverlap >= 1 && brandOverlap >= 1 && modelOverlap >= 1) {
+      score += 12;
+      method = method || 'Agencia + Marca + Modelo';
+    } else if (agencyOverlap >= 1 && productOverlap >= 2) {
+      score += 9;
+      method = method || 'Agencia + Marca/Modelo';
+    } else if (agencyOverlap >= 1 && productOverlap >= 1) {
+      score += 5;
+      method = method || 'Agencia + Producto';
     }
 
     if (row.requestAt && order?.created_at) {
@@ -384,14 +476,38 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const range = (searchParams.get('range') || '7D').toUpperCase();
 
-    const orders = await fetchAllOrderryOrders();
     let prealerts: Awaited<ReturnType<typeof getBackofficePrealertRows>> = [];
+    let orders: GenericOrder[] = [];
     let warning = '';
+    let source = 'none';
 
     try {
-      prealerts = await getBackofficePrealertRows();
+      prealerts = await getBackofficePrealertRowsFromGoogleSheets();
+      source = prealerts.length ? 'googlesheets+orderry' : 'googlesheets-only';
     } catch (error: any) {
       warning = error?.message || 'Google Sheets no disponible en este momento.';
+    }
+
+    if (!prealerts.length) {
+      try {
+        prealerts = await getBackofficePrealertRows();
+        source = prealerts.length ? 'supabase+orderry' : source;
+      } catch (error: any) {
+        warning = warning || error?.message || 'Supabase no disponible en este momento.';
+      }
+    }
+
+    try {
+      const timeout = new Promise<GenericOrder[]>((resolve) => {
+        setTimeout(() => resolve([]), 12000);
+      });
+      orders = await Promise.race([fetchAllOrderryOrders(), timeout]);
+      if (!orders.length) {
+        warning = warning || 'Orderry tardó demasiado; se muestran pre-alertas sin cruce completo.';
+      }
+    } catch {
+      warning = warning || 'No fue posible consultar Orderry; se muestran pre-alertas sin cruce completo.';
+      orders = [];
     }
 
     const orderIndex = buildOrderIndex(orders);
@@ -401,11 +517,25 @@ export async function GET(request: Request) {
           const match = findBestOrderMatch(row, orderIndex, orders);
           const matchedOrder = match.order;
           const matchedOrderNumber = matchedOrder?.number || '';
-          const orderryAt = matchedOrder?.created_at || row.orderryAt || null;
-          const hasOrderryEntry = Boolean(matchedOrderNumber || orderryAt);
+          const orderryAt = matchedOrder?.created_at || row.orderryAt || (matchedOrderNumber ? row.requestAt : null);
+          const closedWonAt = getClosedWonAtFromOrder(matchedOrder);
+          const requestDate = row.requestAt ? new Date(row.requestAt) : null;
+          const orderryDate = orderryAt ? new Date(orderryAt) : null;
+          const isHistoricalBeforeRequest = Boolean(
+            requestDate &&
+            orderryDate &&
+            !Number.isNaN(requestDate.getTime()) &&
+            !Number.isNaN(orderryDate.getTime()) &&
+            orderryDate.getTime() < requestDate.getTime() - 6 * 60 * 60 * 1000
+          );
+
+          const hasOrderryEntry = Boolean((matchedOrderNumber || orderryAt) && !isHistoricalBeforeRequest);
+          const effectiveOrderryAt = hasOrderryEntry ? orderryAt : null;
+          const effectiveClosedWonAt = hasOrderryEntry ? closedWonAt : null;
           const collectionHours = diffHours(row.requestAt, row.collectedAt);
-          const systemHours = diffHours(row.requestAt, orderryAt);
-          const systemDays = diffDays(row.requestAt, orderryAt);
+          const systemHours = diffHours(row.requestAt, effectiveOrderryAt);
+          const systemDays = diffDays(row.requestAt, effectiveOrderryAt);
+          const closedWonDays = diffDays(row.requestAt, effectiveClosedWonAt);
 
           return {
             client: row.client,
@@ -416,12 +546,19 @@ export async function GET(request: Request) {
             equipmentName: row.equipmentName,
             requestAt: row.requestAt,
             collectedAt: row.collectedAt,
-            orderryAt,
-            matchedOrderNumber,
-            matchMethod: hasOrderryEntry ? (match.method || 'Aceptado en Orderry') : 'Sin orden en Orderry',
+            orderryAt: effectiveOrderryAt,
+            closedWonAt: effectiveClosedWonAt,
+            matchedOrderNumber: hasOrderryEntry ? matchedOrderNumber : '',
+            matchMethod: hasOrderryEntry
+              ? (match.method || 'Aceptado en Orderry')
+              : isHistoricalBeforeRequest
+                ? 'Coincidencia histórica (posible reingreso)'
+                : 'Sin orden en Orderry',
             collectionHours,
             systemHours,
             systemDays,
+            closedWonDays,
+            historicalDetected: isHistoricalBeforeRequest,
             status: hasOrderryEntry
               ? 'Aceptado'
               : row.requestAt
@@ -431,7 +568,7 @@ export async function GET(request: Request) {
         })
       : buildFallbackRowsFromOrders(orders);
 
-    const scopedRows = enrichedRows.filter((row) => isWithinBackofficeRange(row.requestAt, range));
+    const scopedRows = enrichedRows.filter((row) => isWithinBackofficeRange(row.requestAt || row.orderryAt, range));
 
     const summary = {
       totalRequests: scopedRows.length,
@@ -461,9 +598,8 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       connected: orders.length > 0 || enrichedRows.length > 0,
-      source: prealerts.length ? 'sheets+orderry' : orders.length > 0 ? 'orderry-only' : 'none',
+      source: prealerts.length ? (source === 'none' ? 'sheets+orderry' : source) : orders.length > 0 ? 'orderry-only' : 'none',
       warning,
-      sheetId: process.env.GOOGLE_SHEET_ID || '1parq_eAadR7i6em9gwj5rCQTRJApdj3N0ELFV5LnSSM',
       summary,
       breakdown,
       recentRows: scopedRows

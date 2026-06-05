@@ -1,5 +1,26 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { fetchAllOrdersFromOrderry } from '@/lib/google-sheets';
+﻿import { NextRequest, NextResponse } from 'next/server';
+
+async function fetchAllOrdersFromOrderry(): Promise<Record<string, any>[]> {
+  const apiKey = process.env.ORDERRY_API_KEY;
+  const apiUrl = process.env.ORDERRY_API_URL || 'https://api.orderry.com';
+  if (!apiKey) throw new Error('ORDERRY_API_KEY not configured');
+
+  const allOrders: Record<string, any>[] = [];
+  let page = 1;
+  while (true) {
+    const res = await fetch(`${apiUrl}/v2/orders?limit=200&page=${page}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) break;
+    const data = await res.json();
+    if (!data.data || data.data.length === 0) break;
+    allOrders.push(...data.data);
+    page++;
+    if (page > 50) break; // safety limit
+  }
+  return allOrders;
+}
 
 /**
  * POST /api/claims/generate-xiaomi
@@ -44,7 +65,7 @@ const L3_MALFUNCTION_CODES: Record<string, { name: string; keywords: string[] }>
     name: 'Speaker no voice',
     keywords: ['audio', 'sonido', 'bocina', 'no se escucha', 'ronca'],
   },
-  MP099-GEN: {
+  'MP099-GEN': {
     name: 'Generic malfunction',
     keywords: ['general', 'otro', 'falla', 'defecto'],
   },

@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { CreateTechnicianMovementSchema } from '@/schemas/technician-movement';
-import { saveTechnicianMovement, getTechnicianMovementsByDate, getTechnicianDailySummary } from '@/lib/google-sheets';
+import {
+  getTechnicianDailySummary,
+  getTechnicianMovementsByDate,
+  saveTechnicianMovement,
+} from '@/lib/supabase-store';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -25,11 +29,8 @@ export const revalidate = 0;
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-
-    // Validar datos con schema
     const validated = CreateTechnicianMovementSchema.parse(body);
 
-    // Guardar en Google Sheets
     await saveTechnicianMovement({
       order_id: validated.order_id,
       order_name: validated.order_name,
@@ -45,24 +46,9 @@ export async function POST(request: Request) {
       duration_minutes: validated.duration_minutes,
     });
 
-    return NextResponse.json(
-      {
-        success: true,
-        message: 'Movimiento registrado exitosamente',
-        data: validated,
-      },
-      { status: 201 }
-    );
+    return NextResponse.json({ success: true, message: 'Movimiento registrado.', data: validated }, { status: 201 });
   } catch (error: any) {
-    console.error('Error registrando movimiento:', error);
-
-    return NextResponse.json(
-      {
-        success: false,
-        error: error?.message || 'Error al registrar movimiento',
-      },
-      { status: error?.status || 400 }
-    );
+    return NextResponse.json({ success: false, error: error?.message || 'Error al registrar movimiento' }, { status: error?.status || 400 });
   }
 }
 
@@ -78,13 +64,9 @@ export async function GET(request: Request) {
     const technicianId = searchParams.get('technician_id');
 
     if (!date) {
-      return NextResponse.json(
-        { error: 'Parámetro "date" es requerido (formato: YYYY-MM-DD)' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Parámetro "date" es requerido (formato: YYYY-MM-DD)' }, { status: 400 });
     }
 
-    // Si solicita resumen de un técnico específico
     if (technicianId) {
       const summary = await getTechnicianDailySummary(date, technicianId, tenantId);
 
@@ -103,10 +85,8 @@ export async function GET(request: Request) {
       return NextResponse.json(summary);
     }
 
-    // Obtener todos los movimientos del día
     const movements = await getTechnicianMovementsByDate(date, tenantId);
 
-    // Agrupar por técnico
     const byTechnician = new Map<
       string,
       {
@@ -141,18 +121,9 @@ export async function GET(request: Request) {
       tenant_id: tenantId || 'ALL',
       total_movements: movements.length,
       technicians_count: byTechnician.size,
-      technicians: Array.from(byTechnician.values()).sort(
-        (a, b) => b.total_movements - a.total_movements
-      ),
+      technicians: Array.from(byTechnician.values()).sort((a, b) => b.total_movements - a.total_movements),
     });
   } catch (error: any) {
-    console.error('Error obteniendo movimientos:', error);
-
-    return NextResponse.json(
-      {
-        error: error?.message || 'Error al obtener movimientos',
-      },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: error?.message || 'Error al obtener movimientos' }, { status: 500 });
   }
 }

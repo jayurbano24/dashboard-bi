@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useTransition, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import * as XLSX from 'xlsx';
+import { createClient } from '@/lib/supabase/client';
 import {
   Card,
   DonutChart,
@@ -47,7 +48,7 @@ const TECHNICIANS = [
   { name: 'Maria Fernanda', os: 52, repairs: 41, qc: 35, hours: 160, ftf: 94 },
   { name: 'Nataly Mishell', os: 48, repairs: 38, qc: 30, hours: 160, ftf: 97 },
   { name: 'Laura Esther', os: 50, repairs: 42, qc: 38, hours: 160, ftf: 95 },
-  { name: 'Steven Obed', os: 55, repairs: 48, qc: 42, hours: 160, ftf: 98 },
+  { name: 'Kevin Chicas Franco', os: 55, repairs: 48, qc: 42, hours: 160, ftf: 98 },
   { name: 'Rudy Pineda', os: 58, repairs: 50, qc: 45, hours: 160, ftf: 93 },
   { name: 'Juan Carlos', os: 42, repairs: 30, qc: 25, hours: 160, ftf: 96 },
   { name: 'Carlos Mario', os: 47, repairs: 35, qc: 32, hours: 160, ftf: 95 },
@@ -456,6 +457,7 @@ const PRODUCT_GROUPS = [
 ] as const;
 
 const DATE_FILTERS = [
+  { value: 'ALL', label: 'Todo histórico' },
   { value: 'TODAY', label: 'Hoy' },
   { value: '7D', label: 'Últimos 7 días' },
   { value: '30D', label: 'Últimos 30 días' },
@@ -493,11 +495,14 @@ type BackofficeRecentRow = {
   requestAt: string | null;
   collectedAt: string | null;
   orderryAt: string | null;
+  closedWonAt?: string | null;
   matchedOrderNumber: string;
   matchMethod?: string;
   collectionHours: number | null;
   systemHours: number | null;
   systemDays?: number | null;
+  closedWonDays?: number | null;
+  historicalDetected?: boolean;
   status: string;
 };
 
@@ -552,18 +557,53 @@ const formatDaysHoursMetric = (value: number | null) => {
   const days = value / 24;
   return `${days.toFixed(1)}d / ${value.toFixed(1)}h`;
 };
+
+const extractBackofficeBrandModel = (equipmentName?: string | null) => {
+  const text = String(equipmentName || '').trim();
+  if (!text) return { brand: 'Sin marca', model: 'Sin modelo' };
+
+  const cleaned = text
+    .replace(/[()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const tokens = cleaned.split(' ').filter(Boolean);
+  const brand = tokens[0] || 'Sin marca';
+  const model = tokens.slice(1, 5).join(' ') || 'Sin modelo';
+  return { brand, model };
+};
 const EXECUTOR_ALIASES: Record<string, string> = {
   '149219': 'ALEJANDRA PATZAN PALACIOS',
   '149215': 'RUDY PINEDA OBREGON',
-  '149220': 'STEVEN OBED REYES LOPEZ',
+  '149220': 'KEVIN CHICAS FRANCO',
 };
 const CREATOR_ALIASES: Record<string, string> = {
   '149218': 'MARIA FERNANDA JEREZ MARTIN',
   '149199': 'LAURA ESTHER MUÑOZ MEJIA',
-  '149216': 'GEIRY ANTONIO URBANO RINCON',
+  '149217': 'NATHALY',
+  '149216': 'NATALY MISHELL RODRIGUEZ CALDERON',
   '149138': 'CRISTAL ABIGAIL BARRENO DIVAS',
 };
+const CREATOR_ROLE_BY_ID: Record<string, string> = {
+  '149218': 'Backoffices',
+  '149199': 'Supervisor Backoffices',
+  '149216': 'Backoffices',
+  '149217': 'Backoffices',
+  '149138': 'Backoffices',
+};
+const ALLOWED_CREATOR_ROLES = new Set(['BACKOFFICES', 'SUPERVISOR BACKOFFICES']);
 const FALLBACK_TECHNICIANS = Object.values(EXECUTOR_ALIASES);
+
+const getCreatorIdFromOrder = (order: Record<string, any>) => {
+  return String(order?.created_by_id || order?.creator_id || '').trim();
+};
+
+const hasAllowedCreatorRole = (order: Record<string, any>) => {
+  const creatorId = getCreatorIdFromOrder(order);
+  if (!creatorId) return false;
+  const role = CREATOR_ROLE_BY_ID[creatorId];
+  return Boolean(role) && ALLOWED_CREATOR_ROLES.has(normalizeText(role));
+};
 
 const extractBrandFromOrder = (order: Record<string, any>) => {
   const candidates = [
@@ -746,6 +786,8 @@ const extractTechnicianFromOrder = (order: Record<string, any>) => {
 };
 
 const extractCreatorFromOrder = (order: Record<string, any>) => {
+  const creatorId = getCreatorIdFromOrder(order);
+
   const directName = [
     order?.created_by?.name,
     order?.creator?.name,
@@ -753,10 +795,9 @@ const extractCreatorFromOrder = (order: Record<string, any>) => {
     order?.created_by_name,
   ].find((value) => typeof value === 'string' && value.trim())?.trim();
 
-  if (directName) return directName;
+  if (directName) return creatorId ? `${directName} (${creatorId})` : directName;
 
-  const creatorId = String(order?.created_by_id || order?.creator_id || '').trim();
-  if (creatorId && CREATOR_ALIASES[creatorId]) return CREATOR_ALIASES[creatorId];
+  if (creatorId && CREATOR_ALIASES[creatorId]) return `${CREATOR_ALIASES[creatorId]} (${creatorId})`;
   if (creatorId) return `Usuario ${creatorId}`;
 
   return 'Sin creador';
@@ -804,6 +845,11 @@ const extractSeriesFromOrder = (order: Record<string, any>) => {
   if (caseLike) return caseLike.trim();
 
   return candidates[0]?.trim() || null;
+};
+
+const getOrderTrackingKey = (order: Record<string, any>) => {
+  const series = extractSeriesFromOrder(order) || 'SIN-SERIE';
+  return String(order?.id || order?.number || `${series}-${order?.created_at || 'na'}`);
 };
 
 const normalizeClaimToken = (value: string | null | undefined) => {
@@ -922,6 +968,34 @@ const formatDateTime = (value: string | null | undefined) => {
     hour: '2-digit',
     minute: '2-digit',
   });
+};
+
+const formatBackofficeCollection = (row: BackofficeRecentRow) => {
+  if (row.collectedAt) return formatDateTime(row.collectedAt);
+
+  const status = (row.status || '').toUpperCase();
+  if (status.includes('RECOLECT')) return 'Recolectado';
+  if (status.includes('PENDIENTE')) return 'Pendiente de recojo';
+
+  return 'Sin registro';
+};
+
+const formatBackofficeIngreso = (row: BackofficeRecentRow) => {
+  if (row.orderryAt) return formatDateTime(row.orderryAt);
+
+  const method = (row.matchMethod || '').toUpperCase();
+  if (row.historicalDetected || method.includes('COINCIDENCIA HISTÓRICA') || method.includes('COINCIDENCIA HISTORICA')) {
+    return 'Coincidencia histórica (posible reingreso)';
+  }
+  if (method.includes('AGENCIA + MARCA + MODELO') || method.includes('AGENCIA + MARCA/MODELO')) {
+    return 'Ingreso detectado (matching inteligente)';
+  }
+
+  if (method.includes('SIN ORDEN EN ORDERRY')) {
+    return 'Sin orden en Orderry';
+  }
+
+  return 'Sin registro';
 };
 
 const extractManagerFromOrder = (order: Record<string, any>) => {
@@ -1583,12 +1657,51 @@ const isTechnicianRepairCompletedStatus = (statusName: string) => {
   );
 };
 
+const getTechnicianWorkBucket = (order: Record<string, any>) => {
+  const statusName = normalizeText(order?.status?.name);
+
+  if (isDispatchStatus(order)) return 'Cerrada';
+  if (isTechnicianNotRepairedStatus(statusName)) return 'No Reparado';
+  if (statusName.includes('DIAGNOSTICO')) return 'Diagnósticos';
+  if (isQaStatus(statusName)) return 'Controles_QC';
+  if (isTechnicianRepairCompletedStatus(statusName)) return 'Reparaciones';
+  return 'WIP';
+};
+
+const hasOrderPassedThroughRepairStates = (order: Record<string, any>): boolean => {
+  const history = getOrderHistoryEntries(order);
+  return history.some((entry) => {
+    const s = normalizeText(entry.status);
+    return s.includes('DIAGNOSTICO') || s.includes('REPARACION') || s.includes('REPARADO');
+  });
+};
+
+const didOrderReentryQaAfterDispatch = (order: Record<string, any>): boolean => {
+  const history = getOrderHistoryEntries(order);
+  let hasBeenDispatched = false;
+
+  for (let i = 0; i < history.length; i += 1) {
+    const current = normalizeText(history[i].status);
+
+    if (isDispatchStatus({ status: { name: history[i].status } })) {
+      hasBeenDispatched = true;
+    } else if (hasBeenDispatched && statusMatchesAnyMarker(current, QA_LISTO_STATUS_MARKERS)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const isNoteCreditCase = (order: Record<string, any>) => {
   const servicesText = normalizeText(extractServicesFromOrder(order));
   const statusName = normalizeText(order?.status?.name);
   const notesText = normalizeText(`${order?.resume || ''} ${order?.engineer_notes || ''} ${order?.manager_notes || ''}`);
   const paddedServicesText = ` ${servicesText} `;
   const paddedStatusText = ` ${statusName} `;
+
+  // "ENTREGADO-NOTA DE CREDITO" and similar are already dispatched — not a credit note case
+  if (statusName.startsWith('ENTREGADO')) return false;
 
   return (
     servicesText.includes('NOTA DE CREDITO') ||
@@ -1695,11 +1808,16 @@ const isDispatchStatus = (order: Record<string, any>) => {
 };
 
 const isWipEligibleOrder = (order: Record<string, any>) => {
-  return !isDispatchStatus(order) && !isNoteCreditCase(order);
+  return !isDispatchStatus(order);
 };
 
 const getOperationalFunnelStage = (order: Record<string, any>) => {
   const status = normalizeText(order?.status?.name);
+
+  if (
+    status.includes('PARA DEVOLVER') &&
+    !status.includes('NOTA DE CREDITO')
+  ) return 'Para Devolver';
 
   if (isDispatchStatus(order)) return 'Entrega';
 
@@ -1711,7 +1829,7 @@ const getOperationalFunnelStage = (order: Record<string, any>) => {
   if (status.includes('ESPERANDO PARTES')) return 'Esp. Partes';
   if (status.includes('ESCALADO LIFE ONE') || status.includes('ESCALADO LIFEONE') || status.includes('ESCALADO LIFE-ONE')) return 'Esc. Life-One';
 
-  if (isNoteCreditCase(order)) return 'Nota de Crédito';
+  // Status-based checks take priority over service-based isNoteCreditCase
   if (isQaStatus(status)) return 'QA';
 
   // Validación DOA / DAP / SAP → etapa propia
@@ -1727,6 +1845,8 @@ const getOperationalFunnelStage = (order: Record<string, any>) => {
     status.includes('MANTENIEMIENTO');
 
   if (isRepairLikeStatus) return 'Reparación';
+
+  if (isNoteCreditCase(order)) return 'Nota de Crédito';
 
   return 'WIP';
 };
@@ -1958,6 +2078,77 @@ const classifyBonusProductLine = (productGroup: string): BonusProductLine | null
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function DashboardMultimodular() {
+  const router = useRouter();
+  const supabase = createClient();
+  const lastBlockedIdsKeyRef = useRef('');
+  const [authChecked, setAuthChecked] = useState(false);
+  const [, startUiTransition] = useTransition();
+  const [authUser, setAuthUser] = useState<{
+    email: string;
+    role: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    areas: string[];
+    accessibleAreas: string[];
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAuthUser = async () => {
+      try {
+        const response = await fetch('/api/auth/me', { cache: 'no-store' });
+        if (!response.ok) {
+          if (!cancelled) {
+            setAuthUser(null);
+            setAuthChecked(true);
+            router.replace('/login?redirect=%2F');
+          }
+          return;
+        }
+
+        const json = await response.json();
+        if (cancelled) return;
+
+        setAuthUser(json.user ?? null);
+        setAuthChecked(true);
+      } catch {
+        if (!cancelled) {
+          setAuthUser(null);
+          setAuthChecked(true);
+          router.replace('/login?redirect=%2F');
+        }
+      }
+    };
+
+    loadAuthUser();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  const normalizeAccessText = (value: string) =>
+    value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+  const normalizedRole = authUser?.role ? normalizeAccessText(authUser.role) : '';
+  const canSeeAllAreas = normalizedRole === 'admin';
+  const accessibleAreas = authUser?.accessibleAreas ?? [];
+  const normalizedAreas = new Set(accessibleAreas.map((area) => normalizeAccessText(area)));
+  const canSeeArea = (area: string) => canSeeAllAreas || normalizedAreas.has(normalizeAccessText(area));
+  const canSeeAnyArea = (...areas: string[]) => canSeeAllAreas || areas.some((area) => normalizedAreas.has(normalizeAccessText(area)));
+  const displayName = authUser
+    ? [authUser.firstName, authUser.lastName].filter(Boolean).join(' ').trim() || authUser.email
+    : '';
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.replace('/login');
+  }
+
   const [selectedSede, setSelectedSede] = useState('ALL');
   const [selectedProduct, setSelectedProduct] = useState('ALL');
   const [selectedBrand, setSelectedBrand] = useState('ALL');
@@ -1997,10 +2188,13 @@ export default function DashboardMultimodular() {
   const [connectionStatus, setConnectionStatus] = useState<string>('Checking connection...');
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [backofficeData, setBackofficeData] = useState<BackofficeApiResponse>(EMPTY_BACKOFFICE_DATA);
-  const [backofficeStatus, setBackofficeStatus] = useState<string>('Google Sheets: cargando pre-alertas...');
+  const [backofficeStatus, setBackofficeStatus] = useState<string>('Supabase: cargando pre-alertas...');
   const [selectedBackofficeClient, setSelectedBackofficeClient] = useState('ALL');
   const [selectedBackofficeStatus, setSelectedBackofficeStatus] = useState('ALL');
   const [backofficeSearch, setBackofficeSearch] = useState('');
+  const [backofficeFromDate, setBackofficeFromDate] = useState('');
+  const [backofficeToDate, setBackofficeToDate] = useState('');
+  const [backofficeSortOrder, setBackofficeSortOrder] = useState<'DESC' | 'ASC'>('DESC');
   const [xiaomiRegistryInput, setXiaomiRegistryInput] = useState('');
   const [selectedClaimsStatus, setSelectedClaimsStatus] = useState('ALL');
   const [claimsSearch, setClaimsSearch] = useState('');
@@ -2031,10 +2225,13 @@ export default function DashboardMultimodular() {
 
   // Verificar conexión con Orderry API y obtener marcas disponibles
   useEffect(() => {
+    let isActive = true;
+
     async function checkConnection() {
       try {
-        const res = await fetch('/api/orders', { cache: 'no-store' });
+        const res = await fetch('/api/orders?maxPages=3');
         const data = await res.json();
+        if (!isActive) return;
         if (data.connected) {
           const apiOrders = Array.isArray(data.data) ? data.data : [];
           const dynamicBrands = Array.from(
@@ -2053,11 +2250,13 @@ export default function DashboardMultimodular() {
             )
           ).sort((a, b) => a.localeCompare(b));
 
-          setAvailableBrands(dynamicBrands.length ? dynamicBrands : FALLBACK_BRANDS);
-          setAvailableTechnicians(dynamicTechnicians.length ? dynamicTechnicians : FALLBACK_TECHNICIANS);
-          setOrdersData(apiOrders);
-          setIsConnected(true);
-          setConnectionStatus(`API Orderry v2: Conectado · ${apiOrders.length} órdenes`);
+          startUiTransition(() => {
+            setAvailableBrands(dynamicBrands.length ? dynamicBrands : FALLBACK_BRANDS);
+            setAvailableTechnicians(dynamicTechnicians.length ? dynamicTechnicians : FALLBACK_TECHNICIANS);
+            setOrdersData(apiOrders);
+            setIsConnected(true);
+            setConnectionStatus(`API Orderry v2: Conectado · ${apiOrders.length} órdenes`);
+          });
 
           // Fetch piezas reales para órdenes bloqueadas (Esperando Partes + Escalada NC)
           const blockedIds = apiOrders
@@ -2068,55 +2267,114 @@ export default function DashboardMultimodular() {
             .map((o: Record<string, any>) => String(o.id));
 
           if (blockedIds.length > 0) {
+            const blockedKey = blockedIds.join(',');
+            if (lastBlockedIdsKeyRef.current === blockedKey) return;
+            lastBlockedIdsKeyRef.current = blockedKey;
+
             setBodegaPartsLoading(true);
-            fetch(`/api/bodega/parts-demand?order_ids=${blockedIds.join(',')}`, { cache: 'no-store' })
+            fetch(`/api/bodega/parts-demand?order_ids=${blockedKey}`, { cache: 'no-store' })
               .then((r) => r.json())
               .then((d) => {
                 if (d?.orderProducts) setBodegaOrderProducts(d.orderProducts);
               })
               .catch(() => {})
               .finally(() => setBodegaPartsLoading(false));
+          } else {
+            lastBlockedIdsKeyRef.current = '';
+            setBodegaOrderProducts({});
           }
         } else {
+          startUiTransition(() => {
+            setIsConnected(false);
+            setOrdersData([]);
+            setAvailableBrands(FALLBACK_BRANDS);
+            setAvailableTechnicians(FALLBACK_TECHNICIANS);
+            setConnectionStatus('Error de API: ' + (data.error || 'Desconectado'));
+          });
+        }
+      } catch (err) {
+        startUiTransition(() => {
           setIsConnected(false);
           setOrdersData([]);
           setAvailableBrands(FALLBACK_BRANDS);
           setAvailableTechnicians(FALLBACK_TECHNICIANS);
-          setConnectionStatus('Error de API: ' + (data.error || 'Desconectado'));
-        }
-      } catch (err) {
-        setIsConnected(false);
-        setOrdersData([]);
-        setAvailableBrands(FALLBACK_BRANDS);
-        setAvailableTechnicians(FALLBACK_TECHNICIANS);
-        setConnectionStatus('Error al conectar con el backend');
+          setConnectionStatus('Error al conectar con el backend');
+        });
       }
     }
-    checkConnection();
+
+    void checkConnection();
+    const intervalId = window.setInterval(() => {
+      void checkConnection();
+    }, 5 * 60 * 1000);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
-    async function loadBackofficeData() {
+    let isActive = true;
+
+    async function loadBackofficeData(attempt = 0) {
       try {
-        const response = await fetch(`/api/backoffice?range=${encodeURIComponent(selectedDateRange)}`, { cache: 'no-store' });
+        const response = await fetch(`/api/backoffice?range=${encodeURIComponent(selectedDateRange)}`, {
+          cache: 'no-store',
+        });
         const data: BackofficeApiResponse = await response.json();
-        setBackofficeData(data);
+        if (!isActive) return;
+
+        setBackofficeData((prev) => {
+          const incomingHasData = (data.summary?.totalRequests || 0) > 0 || (data.recentRows?.length || 0) > 0;
+          const incomingIsNone = String(data.source || 'none') === 'none';
+          const prevHasData = (prev.summary?.totalRequests || 0) > 0 || (prev.recentRows?.length || 0) > 0;
+
+          // Evita parpadeo a estado vacío cuando la llamada responde temporalmente sin datos.
+          if (!incomingHasData && incomingIsNone && prevHasData) {
+            return prev;
+          }
+
+          return data;
+        });
 
         if (data.connected) {
           if (data.source === 'orderry-only') {
-            setBackofficeStatus(`Orderry conectado · ${data.summary.totalRequests} registros disponibles${data.warning ? ' · Google Sheets pendiente' : ''}`);
+            setBackofficeStatus(`Orderry conectado · ${data.summary.totalRequests} registros disponibles${data.warning ? ' · Google Sheets/Supabase pendiente' : ''}`);
+          } else if (String(data.source || '').startsWith('googlesheets')) {
+            setBackofficeStatus(`Google Sheets conectado · ${data.summary.totalRequests} registros · Vinculadas a Orderry: ${data.summary.matchedToOrderry}`);
           } else {
             setBackofficeStatus(`Pre-alertas: ${data.summary.totalRequests} · Vinculadas a Orderry: ${data.summary.matchedToOrderry}`);
           }
         } else {
-          setBackofficeStatus(data.error || 'Sin acceso a Google Sheets');
+          const incomingHasData = (data.summary?.totalRequests || 0) > 0 || (data.recentRows?.length || 0) > 0;
+          if (!incomingHasData && String(data.source || 'none') === 'none') {
+            setBackofficeStatus('Sincronizando fuentes de Backoffice...');
+          } else {
+            setBackofficeStatus(data.error || 'Sin acceso a Supabase');
+          }
         }
       } catch (error) {
+        if (attempt < 1) {
+          window.setTimeout(() => {
+            if (!isActive) return;
+            void loadBackofficeData(attempt + 1);
+          }, 1200);
+          return;
+        }
         setBackofficeStatus('Error leyendo pre-alertas logísticas');
       }
     }
 
-    loadBackofficeData();
+    void loadBackofficeData();
+    const intervalId = window.setInterval(() => {
+      void loadBackofficeData();
+    }, 5 * 60 * 1000);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(intervalId);
+    };
   }, [selectedDateRange]);
 
   useEffect(() => {
@@ -2155,15 +2413,117 @@ export default function DashboardMultimodular() {
   const backofficeSummary = backofficeData.summary;
   const backofficeBreakdown = backofficeData.breakdown.length ? backofficeData.breakdown : EMPTY_BACKOFFICE_DATA.breakdown;
   const recentBackofficeRows = backofficeData.recentRows;
+  const hasBackofficeData = backofficeSummary.totalRequests > 0 || recentBackofficeRows.length > 0;
+  const isGoogleSheetsSource = String(backofficeData.source || '').startsWith('googlesheets');
+  const isSupabaseSource = backofficeData.source === 'sheets+orderry' || backofficeData.source === 'supabase+orderry';
+  const isOrderryOnlySource = backofficeData.source === 'orderry-only';
+  const isBackofficeIngresada = (row: BackofficeRecentRow) => {
+    const status = (row.status || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase();
+
+    const requestTime = row.requestAt ? new Date(row.requestAt).getTime() : NaN;
+    const orderryTime = row.orderryAt ? new Date(row.orderryAt).getTime() : NaN;
+    const hasValidRequest = !Number.isNaN(requestTime);
+    const hasValidOrderry = !Number.isNaN(orderryTime);
+    const isHistoricalBeforeRequest = hasValidRequest && hasValidOrderry && orderryTime < requestTime - 6 * 60 * 60 * 1000;
+
+    if (row.historicalDetected || isHistoricalBeforeRequest) return false;
+
+    const hasOrderryEvidence = Boolean(String(row.orderryAt || '').trim() || String(row.matchedOrderNumber || '').trim());
+
+    if (hasOrderryEvidence) return true;
+    if (status.includes('PENDIENTE')) return false;
+
+    return status.includes('ACEPTAD') || status.includes('INGRESAD');
+  };
+
+  const isBackofficePendiente = (row: BackofficeRecentRow) => !isBackofficeIngresada(row);
+
+  const isWithinBackofficeUiDateRange = (row: BackofficeRecentRow) => {
+    const sourceDate = row.requestAt || row.orderryAt || row.closedWonAt || null;
+    if (!sourceDate) return true;
+
+    const current = new Date(sourceDate);
+    if (Number.isNaN(current.getTime())) return true;
+
+    if (backofficeFromDate) {
+      const from = new Date(`${backofficeFromDate}T00:00:00`);
+      if (!Number.isNaN(from.getTime()) && current < from) return false;
+    }
+
+    if (backofficeToDate) {
+      const to = new Date(`${backofficeToDate}T23:59:59`);
+      if (!Number.isNaN(to.getTime()) && current > to) return false;
+    }
+
+    return true;
+  };
+
+  const sortBackofficeRowsByDate = (rows: BackofficeRecentRow[]) => {
+    return [...rows].sort((a, b) => {
+      const aTime = new Date(a.requestAt || a.orderryAt || a.closedWonAt || 0).getTime() || 0;
+      const bTime = new Date(b.requestAt || b.orderryAt || b.closedWonAt || 0).getTime() || 0;
+      return backofficeSortOrder === 'ASC' ? aTime - bTime : bTime - aTime;
+    });
+  };
+
   const filteredBackofficeRows = useMemo(() => {
-    return recentBackofficeRows.filter((row) => {
+    const rows = recentBackofficeRows.filter((row) => {
+      if (!isBackofficeIngresada(row)) return false;
+      if (!isWithinBackofficeUiDateRange(row)) return false;
       const matchesClient = selectedBackofficeClient === 'ALL' || row.client === selectedBackofficeClient;
       const matchesStatus = selectedBackofficeStatus === 'ALL' || row.status === selectedBackofficeStatus;
-      const searchText = `${row.reference} ${row.trackingCode || ''} ${row.equipmentName || ''} ${row.matchedOrderNumber || ''}`.toUpperCase();
+      const searchText = `${row.reference} ${row.trackingCode || ''} ${row.equipmentName || ''} ${row.matchedOrderNumber || ''} ${row.customer || ''}`.toUpperCase();
       const matchesSearch = !backofficeSearch.trim() || searchText.includes(backofficeSearch.trim().toUpperCase());
       return matchesClient && matchesStatus && matchesSearch;
     });
-  }, [recentBackofficeRows, selectedBackofficeClient, selectedBackofficeStatus, backofficeSearch]);
+    return sortBackofficeRowsByDate(rows);
+  }, [recentBackofficeRows, selectedBackofficeClient, selectedBackofficeStatus, backofficeSearch, backofficeFromDate, backofficeToDate, backofficeSortOrder]);
+
+  const pendingBackofficeRows = useMemo(() => {
+    const rows = recentBackofficeRows
+      .filter((row) => isBackofficePendiente(row))
+      .filter((row) => isWithinBackofficeUiDateRange(row))
+      .filter((row) => selectedBackofficeClient === 'ALL' || row.client === selectedBackofficeClient)
+      .filter((row) => {
+        const searchText = `${row.reference} ${row.trackingCode || ''} ${row.equipmentName || ''} ${row.customer || ''} ${row.matchMethod || ''}`.toUpperCase();
+        return !backofficeSearch.trim() || searchText.includes(backofficeSearch.trim().toUpperCase());
+      })
+      .slice(0, 40);
+    return sortBackofficeRowsByDate(rows);
+  }, [recentBackofficeRows, selectedBackofficeClient, backofficeSearch, backofficeFromDate, backofficeToDate, backofficeSortOrder]);
+
+  const exportBackofficeExcel = async () => {
+    const normalizeDayValue = (value: number | null | undefined) => {
+      if (value === null || value === undefined || Number.isNaN(value)) return null;
+      return Number(Math.abs(value).toFixed(1));
+    };
+
+    const rows = [...filteredBackofficeRows, ...pendingBackofficeRows].map((row) => ({
+      Cliente: row.client,
+      Agencia_Cliente: row.customer || 'Sin agencia',
+      Ticket_Conduce_IMEI_Folio: row.reference || 'Sin ticket',
+      IMEI_Folio: row.trackingCode || '',
+      Equipo: row.equipmentName || '',
+      Fecha_Solicitud: formatDateTime(row.requestAt),
+      Ingreso_Orderry: formatDateTime(row.orderryAt),
+      Cierre_Ganada: formatDateTime(row.closedWonAt || null),
+      TAT_Dias_Solicitud_a_Orderry: normalizeDayValue(row.systemDays ?? calculateDiffDays(row.requestAt, row.orderryAt)),
+      Dias_Solicitud_a_Cierre_Ganada: normalizeDayValue(row.closedWonDays ?? calculateDiffDays(row.requestAt, row.closedWonAt || null)),
+      Cruce: row.matchMethod || 'Sin cruce',
+      Codigo_Cruce_TCGT: row.matchedOrderNumber || '',
+      Historico_Detectado: row.historicalDetected ? 'SI' : 'NO',
+      Estado: row.status,
+    }));
+
+    const { utils, writeFile } = await import('xlsx');
+    const worksheet = utils.json_to_sheet(rows);
+    const workbook = utils.book_new();
+    utils.book_append_sheet(workbook, worksheet, 'Backoffice');
+    writeFile(workbook, `backoffice_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
 
   const brandFactor = useMemo(() => {
     if (selectedBrand === 'ALL') return 1;
@@ -2341,6 +2701,7 @@ export default function DashboardMultimodular() {
     }
 
     const byDate: Record<DateFilterValue, { tat: string; sla: string; backlog: number; bounce: string; claim: string }> = {
+      ALL: { tat: '1.5 días', sla: '95.4%', backlog: 178, bounce: '3.9%', claim: '93%' },
       TODAY: { tat: '1.0 días', sla: '97.1%', backlog: 52, bounce: '2.1%', claim: '96%' },
       '7D': { tat: '1.6 días', sla: '94.2%', backlog: 145, bounce: '4.8%', claim: '92%' },
       '30D': { tat: '1.7 días', sla: '91.6%', backlog: 220, bounce: '5.6%', claim: '89%' },
@@ -2388,6 +2749,7 @@ export default function DashboardMultimodular() {
     if (selectedSede === 'GT') factor *= 0.9;
 
     const dateFactors: Record<DateFilterValue, number> = {
+      ALL: 0.92,
       TODAY: 0.4,
       '7D': 1.0,
       '30D': 1.18,
@@ -2553,9 +2915,9 @@ export default function DashboardMultimodular() {
   }, [hasLiveData, filteredOrders, weeklyFlowData]);
 
   const totalWip = useMemo(() => {
-    if (hasLiveData) return filteredOrders.filter((order) => isWipEligibleOrder(order)).length;
+    if (hasLiveData) return Math.max(totalIngresos - totalDespachos, 0);
     return Math.max(totalIngresos - totalDespachos, 0);
-  }, [hasLiveData, filteredOrders, totalIngresos, totalDespachos]);
+  }, [hasLiveData, totalIngresos, totalDespachos]);
 
   const dispatchCompliance = useMemo(() => {
     return totalIngresos ? Math.round((totalDespachos / totalIngresos) * 100) : 0;
@@ -2635,7 +2997,8 @@ export default function DashboardMultimodular() {
       .slice(0, 100);
   }, [overdueSlaOrders, selectedSlaSegment, slaScopedOrders]);
 
-  const exportSlaToExcel = () => {
+  const exportSlaToExcel = async () => {
+    const XLSX = await import('xlsx');
     const filtered = slaOrderDetails.filter(
       (item) => slaEquipFilter === 'ALL' || item.productGroup === slaEquipFilter,
     );
@@ -2919,6 +3282,7 @@ export default function DashboardMultimodular() {
         { stage: 'Validación', count: byStage('Validación'), color: 'violet' },
         { stage: 'QA', count: byStage('QA'), color: 'emerald' },
         { stage: 'Nota de Crédito', count: byStage('Nota de Crédito'), color: 'rose' },
+        { stage: 'Para Devolver', count: byStage('Para Devolver'), color: 'orange' },
         { stage: 'Entrega', count: byStage('Entrega'), color: 'cyan' },
       ];
     }
@@ -3011,11 +3375,15 @@ export default function DashboardMultimodular() {
     ];
   }, [hasLiveData, filteredOrders, filterFactor, selectedProduct]);
 
+  const getTechnicianFilterDate = (order: Record<string, any>) => {
+    return String(order?.done_at || order?.closed_at || order?.created_at || '');
+  };
+
   const availableTechnicianMonths = useMemo(() => {
     const monthMap = new Map<string, string>();
 
-    scopedOrders.forEach((order) => {
-      const monthKey = (order?.created_at || '').slice(0, 7);
+    filteredOrders.forEach((order) => {
+      const monthKey = getTechnicianFilterDate(order).slice(0, 7);
       if (!monthKey || monthMap.has(monthKey)) return;
       monthMap.set(monthKey, formatMonthLabel(monthKey));
     });
@@ -3023,17 +3391,17 @@ export default function DashboardMultimodular() {
     return Array.from(monthMap.entries())
       .sort(([a], [b]) => b.localeCompare(a))
       .map(([value, label]) => ({ value, label }));
-  }, [scopedOrders]);
+  }, [filteredOrders]);
 
   const availableTechnicianDays = useMemo(() => {
     const sourceOrders = selectedTechnicianMonth === 'ALL'
-      ? scopedOrders
-      : scopedOrders.filter((order) => (order?.created_at || '').slice(0, 7) === selectedTechnicianMonth);
+      ? filteredOrders
+      : filteredOrders.filter((order) => getTechnicianFilterDate(order).slice(0, 7) === selectedTechnicianMonth);
 
     const dayMap = new Map<string, string>();
 
     sourceOrders.forEach((order) => {
-      const dayKey = (order?.created_at || '').slice(0, 10);
+      const dayKey = getTechnicianFilterDate(order).slice(0, 10);
       if (!dayKey || dayMap.has(dayKey)) return;
       dayMap.set(dayKey, formatDateKeyLabel(dayKey, true));
     });
@@ -3041,7 +3409,7 @@ export default function DashboardMultimodular() {
     return Array.from(dayMap.entries())
       .sort(([a], [b]) => b.localeCompare(a))
       .map(([value, label]) => ({ value, label }));
-  }, [scopedOrders, selectedTechnicianMonth]);
+  }, [filteredOrders, selectedTechnicianMonth]);
 
   useEffect(() => {
     if (selectedTechnicianMonth !== 'ALL' && !availableTechnicianMonths.some((month) => month.value === selectedTechnicianMonth)) {
@@ -3056,24 +3424,61 @@ export default function DashboardMultimodular() {
   }, [availableTechnicianDays, selectedTechnicianDay]);
 
   const technicianFilteredOrders = useMemo(() => {
-    let data = scopedOrders;
+    let data = filteredOrders;
 
     if (selectedTechnicianMonth !== 'ALL') {
-      data = data.filter((order) => (order?.created_at || '').slice(0, 7) === selectedTechnicianMonth);
+      data = data.filter((order) => getTechnicianFilterDate(order).slice(0, 7) === selectedTechnicianMonth);
     }
 
     if (selectedTechnicianDay !== 'ALL') {
-      data = data.filter((order) => (order?.created_at || '').slice(0, 10) === selectedTechnicianDay);
+      data = data.filter((order) => getTechnicianFilterDate(order).slice(0, 10) === selectedTechnicianDay);
     }
 
     return data;
-  }, [scopedOrders, selectedTechnicianMonth, selectedTechnicianDay]);
+  }, [filteredOrders, selectedTechnicianMonth, selectedTechnicianDay]);
 
   const technicianOrders = useMemo(() => {
     if (selectedTechnician === 'ALL') return technicianFilteredOrders;
     const selectedNormalized = normalizeText(selectedTechnician);
     return technicianFilteredOrders.filter((order) => normalizeText(extractTechnicianFromOrder(order)) === selectedNormalized);
   }, [technicianFilteredOrders, selectedTechnician]);
+
+  const technicianReentryByOrderKey = useMemo(() => {
+    const historyUniverse = ordersData
+      .filter((order) => selectedSede === 'ALL' || extractSedeFromOrder(order) === selectedSede)
+      .map((order) => {
+        const series = extractSeriesFromOrder(order);
+        const createdAt = new Date(order?.created_at || '');
+        const key = getOrderTrackingKey(order);
+
+        return {
+          key,
+          series,
+          createdAt,
+        };
+      })
+      .filter((item) => item.series && !Number.isNaN(item.createdAt.getTime()))
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+    const lastSeenBySeries = new Map<string, Date>();
+    const bounceByOrderKey = new Map<string, { reentryDays: number | null; within30: boolean }>();
+
+    historyUniverse.forEach((item) => {
+      const previousDate = lastSeenBySeries.get(item.series as string);
+      const reentryDays = previousDate
+        ? (item.createdAt.getTime() - previousDate.getTime()) / (1000 * 60 * 60 * 24)
+        : null;
+
+      bounceByOrderKey.set(item.key, {
+        reentryDays,
+        within30: reentryDays !== null && reentryDays <= 30,
+      });
+
+      lastSeenBySeries.set(item.series as string, item.createdAt);
+    });
+
+    return bounceByOrderKey;
+  }, [ordersData, selectedSede]);
 
   const technicianRankingData = useMemo(() => {
     if (hasLiveData) {
@@ -3082,7 +3487,7 @@ export default function DashboardMultimodular() {
         const statusName = normalizeText(order?.status?.name);
 
         if (!acc[name]) {
-          acc[name] = { name, os: 0, repairs: 0, qc: 0, hours: 0, ftf: 0, dispatches: 0 };
+          acc[name] = { name, os: 0, repairs: 0, qc: 0, hours: 0, ftf: 0, dispatches: 0, firstPass: 0, reentries30: 0, closure: 0 };
         }
 
         acc[name].os += 1;
@@ -3091,43 +3496,64 @@ export default function DashboardMultimodular() {
         if (isTechnicianRepairCompletedStatus(statusName)) acc[name].repairs += 1;
         if (isQaStatus(statusName)) acc[name].qc += 1;
 
-        if (isDispatchStatus(order)) acc[name].dispatches += 1;
+        if (isDispatchStatus(order)) {
+          acc[name].dispatches += 1;
+          const bounceInfo = technicianReentryByOrderKey.get(getOrderTrackingKey(order));
+          if (bounceInfo?.within30) acc[name].reentries30 += 1;
+          else acc[name].firstPass += 1;
+        }
         return acc;
-      }, {} as Record<string, { name: string; os: number; repairs: number; qc: number; hours: number; ftf: number; dispatches: number }>);
+      }, {} as Record<string, { name: string; os: number; repairs: number; qc: number; hours: number; ftf: number; dispatches: number; firstPass: number; reentries30: number; closure: number }>);
 
       return Object.values(grouped)
         .map((item) => ({
           ...item,
           hours: Number((item.hours / Math.max(item.os, 1)).toFixed(1)),
-          ftf: item.os ? Math.round((item.dispatches / item.os) * 100) : 0,
+          ftf: item.dispatches ? Math.round((item.firstPass / item.dispatches) * 100) : 0,
+          reentries30: item.dispatches ? Math.round((item.reentries30 / item.dispatches) * 100) : 0,
+          closure: item.os ? Math.round((item.dispatches / item.os) * 100) : 0,
         }))
         .sort((a, b) => (b.repairs + b.qc) - (a.repairs + a.qc))
         .slice(0, 10);
     }
 
-    return (selectedTechnician === 'ALL' ? TECHNICIANS : TECHNICIANS.filter((tech) => tech.name === selectedTechnician)).map((tech) => ({
-      ...tech,
-      dispatches: Math.round((tech.os * tech.ftf) / 100),
-    }));
-  }, [hasLiveData, technicianOrders, selectedTechnician]);
+    return (selectedTechnician === 'ALL' ? TECHNICIANS : TECHNICIANS.filter((tech) => tech.name === selectedTechnician)).map((tech) => {
+      const dispatches = Math.round((tech.os * tech.ftf) / 100);
+      return {
+        ...tech,
+        dispatches,
+        firstPass: dispatches,
+        reentries30: 0,
+        closure: tech.os ? Math.round((dispatches / tech.os) * 100) : 0,
+      };
+    });
+  }, [hasLiveData, technicianOrders, selectedTechnician, technicianReentryByOrderKey]);
 
   const technicianSummary = useMemo(() => {
     const totalOs = technicianRankingData.reduce((sum, item) => sum + item.os, 0);
     const totalRepairs = technicianRankingData.reduce((sum, item) => sum + item.repairs, 0);
     const totalDispatches = technicianRankingData.reduce((sum, item) => sum + item.dispatches, 0);
+    const totalReentries30 = technicianRankingData.reduce((sum, item) => sum + (item.reentries30 || 0), 0);
+    const totalFirstPass = Math.max(totalDispatches - totalReentries30, 0);
     const weightedHours = technicianRankingData.reduce((sum, item) => sum + item.hours * item.os, 0);
     const weightedFtf = technicianRankingData.reduce((sum, item) => sum + item.ftf * item.os, 0);
     const avgHours = totalOs ? weightedHours / totalOs : 0;
     const avgDays = avgHours / 24;
-    const activeDays = Math.max(new Set(technicianOrders.map((order) => (order?.created_at || '').slice(0, 10)).filter(Boolean)).size, 1);
+    const activeDays = Math.max(new Set(technicianOrders.map((order) => getTechnicianFilterDate(order).slice(0, 10)).filter(Boolean)).size, 1);
+    const wip = Math.max(totalOs - totalDispatches, 0);
+    const wipPct = totalOs ? Math.round((wip / totalOs) * 100) : 0;
 
     return {
       tatHours: `${avgHours.toFixed(1)}h`,
       tatDays: `${avgDays.toFixed(2)} días`,
       productivity: technicianRankingData.length ? (totalRepairs / technicianRankingData.length).toFixed(1) : '0.0',
       productivityDaily: `${(totalRepairs / activeDays).toFixed(1)} eq/día`,
-      ftf: `${totalOs ? Math.round(weightedFtf / totalOs) : 0}%`,
+      ftf: `${totalDispatches ? Math.round((totalFirstPass / totalDispatches) * 100) : 0}%`,
+      reentry30: `${totalDispatches ? Math.round((totalReentries30 / totalDispatches) * 100) : 0}%`,
+      closure: `${totalOs ? Math.round((totalDispatches / totalOs) * 100) : 0}%`,
       delivered: totalDispatches,
+      wip,
+      wipPct,
     };
   }, [technicianOrders, technicianRankingData]);
 
@@ -3138,11 +3564,11 @@ export default function DashboardMultimodular() {
 
     return names.map((name) => {
       const relatedOrders = technicianFilteredOrders.filter((order) => extractTechnicianFromOrder(order) === name);
-      const closedOrders = scopedOrders.filter((order) => {
+      const closedOrders = filteredOrders.filter((order) => {
         if (extractTechnicianFromOrder(order) !== name) return false;
         if (!isDispatchStatus(order)) return false;
 
-        const completedAt = order?.done_at || order?.closed_at || order?.created_at;
+        const completedAt = getTechnicianFilterDate(order);
         if (selectedTechnicianMonth !== 'ALL' && (completedAt || '').slice(0, 7) !== selectedTechnicianMonth) return false;
         if (selectedTechnicianDay !== 'ALL' && (completedAt || '').slice(0, 10) !== selectedTechnicianDay) return false;
 
@@ -3151,15 +3577,31 @@ export default function DashboardMultimodular() {
           : true;
       });
 
-      const diagnosticos = relatedOrders.filter((order) => normalizeText(order?.status?.name).includes('DIAGNOSTICO')).length;
-      const reparaciones = relatedOrders.filter((order) => {
-        const status = normalizeText(order?.status?.name);
-        return isTechnicianRepairCompletedStatus(status);
-      }).length;
-      const noReparado = relatedOrders.filter((order) => isTechnicianNotRepairedStatus(normalizeText(order?.status?.name))).length;
-      const controlesQc = relatedOrders.filter((order) => isQaStatus(normalizeText(order?.status?.name))).length;
+      const stageCounts = relatedOrders.reduce(
+        (acc, order) => {
+          const bucket = getTechnicianWorkBucket(order);
+          acc[bucket] += 1;
+          return acc;
+        },
+        {
+          'Diagnósticos': 0,
+          'Reparaciones': 0,
+          'No Reparado': 0,
+          'Controles_QC': 0,
+          'WIP': 0,
+          'Cerrada': 0,
+        } as Record<string, number>
+      );
+
+      const diagnosticos = stageCounts['Diagnósticos'];
+      const reparaciones = stageCounts['Reparaciones'];
+      const noReparado = stageCounts['No Reparado'];
+      const controlesQc = stageCounts['Controles_QC'];
       const cerrada = closedOrders.length;
-      const wip = relatedOrders.filter((order) => isWipEligibleOrder(order)).length;
+      const wip = Math.max(relatedOrders.length - diagnosticos - reparaciones - noReparado - controlesQc - cerrada, 0);
+      const reentries30 = closedOrders.filter((order) => technicianReentryByOrderKey.get(getOrderTrackingKey(order))?.within30).length;
+      const ftf30 = cerrada ? Math.max(0, Math.round(((cerrada - reentries30) / cerrada) * 100)) : 0;
+      const closurePct = relatedOrders.length ? Math.round((cerrada / relatedOrders.length) * 100) : 0;
       const slaMet = relatedOrders.filter((order) => isOrderWithinSla(order)).length;
       const creatorOwner = Object.entries(
         relatedOrders.reduce((acc, order) => {
@@ -3185,6 +3627,9 @@ export default function DashboardMultimodular() {
         noReparado,
         controlesQc,
         wip,
+        closurePct: `${closurePct}%`,
+        ftf30: `${ftf30}%`,
+        reentry30: `${cerrada ? Math.round((reentries30 / cerrada) * 100) : 0}%`,
         sla,
         cerrada,
         creatorOwner,
@@ -3194,10 +3639,11 @@ export default function DashboardMultimodular() {
   }, [
     technicianRankingData,
     technicianFilteredOrders,
-    scopedOrders,
+    filteredOrders,
     selectedTechnician,
     selectedTechnicianMonth,
     selectedTechnicianDay,
+    technicianReentryByOrderKey,
     isCustomMonthRangeActive,
     selectedStartMonth,
     selectedEndMonth,
@@ -3207,7 +3653,7 @@ export default function DashboardMultimodular() {
     const grouped = new Map<string, { week: string; repaired: number; qc: number; closed: number }>();
 
     technicianOrders.forEach((order) => {
-      const bucket = getWeekBucket(order?.created_at);
+      const bucket = getWeekBucket(getTechnicianFilterDate(order));
       if (!bucket) return;
 
       const status = normalizeText(order?.status?.name);
@@ -3495,6 +3941,8 @@ export default function DashboardMultimodular() {
       data = data.filter((order) => (order?.created_at || '').slice(0, 10) === selectedCreatorDay);
     }
 
+    data = data.filter((order) => hasAllowedCreatorRole(order));
+
     return data;
   }, [scopedOrders, selectedCreatorMonth, selectedCreatorDay]);
 
@@ -3675,10 +4123,67 @@ export default function DashboardMultimodular() {
     return technicianRankingData.slice(0, 4).map((item) => ({
       name: item.name,
       tat: `${(item.hours / 24).toFixed(1)} días`,
-      repaired: item.repairs + item.qc,
+      closed: item.dispatches,
+      closure: item.closure,
       sla: item.ftf,
     }));
   }, [technicianRankingData]);
+
+  const getFtfVisualLevel = (ftf: number) => {
+    if (ftf > 90) {
+      return {
+        label: 'Excelente',
+        cardClass: 'border-emerald-300 bg-emerald-50',
+        textClass: 'text-emerald-700',
+      };
+    }
+
+    if (ftf >= 85) {
+      return {
+        label: 'Bueno',
+        cardClass: 'border-amber-300 bg-amber-50',
+        textClass: 'text-amber-700',
+      };
+    }
+
+    if (ftf >= 75) {
+      return {
+        label: 'Aceptable',
+        cardClass: 'border-rose-300 bg-rose-50',
+        textClass: 'text-rose-700',
+      };
+    }
+
+    return {
+      label: 'Bajo',
+      cardClass: 'border-rose-300 bg-rose-50',
+      textClass: 'text-rose-700',
+    };
+  };
+
+  const getSemaforoClass = (level: 'green' | 'yellow' | 'red') => {
+    if (level === 'green') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+    if (level === 'yellow') return 'border-amber-200 bg-amber-50 text-amber-800';
+    return 'border-rose-200 bg-rose-50 text-rose-800';
+  };
+
+  const getClosureLevel = (value: number): 'green' | 'yellow' | 'red' => {
+    if (value >= 85) return 'green';
+    if (value >= 75) return 'yellow';
+    return 'red';
+  };
+
+  const getReentryLevel = (value: number): 'green' | 'yellow' | 'red' => {
+    if (value < 5) return 'green';
+    if (value <= 8) return 'yellow';
+    return 'red';
+  };
+
+  const getWipLevel = (value: number): 'green' | 'yellow' | 'red' => {
+    if (value < 20) return 'green';
+    if (value <= 30) return 'yellow';
+    return 'red';
+  };
 
   const qaOperationalMetrics = useMemo(() => {
     if (!hasLiveData) {
@@ -3693,9 +4198,13 @@ export default function DashboardMultimodular() {
         currentlyInQaCount: 0,
         historyCoverage: 0,
         doaRate: 0,
+        qaReentryCount: 0,
+        qaReentryRate: 0,
+        repairedCasesMetrics: { count: 0, avgDays: 0, medianDays: 0, p90Days: 0, reentryCount: 0, reentryRate: 0 },
+        nonRepairedCasesMetrics: { count: 0, avgDays: 0, medianDays: 0, p90Days: 0, reentryCount: 0, reentryRate: 0 },
         weeklyData: QA_RESULT_DATA,
         rejectionRows: [] as Array<{ number: string; equipment: string; returnedStatus: string; technician: string }>,
-        topQaAgingRows: [] as Array<{ number: string; equipment: string; technician: string; status: string; qaDays: number; enteredAt: string; ongoing: boolean }>,
+        topQaAgingRows: [] as Array<{ number: string; equipment: string; technician: string; status: string; qaDays: number; enteredAt: string; ongoing: boolean; caseType: string }>,
         tatDistribution: [] as Array<{ range: string; count: number }>,
         byTechnicianInQc: [] as Array<{ name: string; total: number; active: number }>,
       };
@@ -3703,8 +4212,10 @@ export default function DashboardMultimodular() {
 
     const weeklyBuckets = new Map<string, { week: string; Aprobados: number; Rechazados: number }>();
     const rejectionRows: Array<{ number: string; equipment: string; returnedStatus: string; technician: string }> = [];
-    const topQaAgingRows: Array<{ number: string; equipment: string; technician: string; status: string; qaDays: number; enteredAt: string; ongoing: boolean }> = [];
+    const topQaAgingRows: Array<{ number: string; equipment: string; technician: string; status: string; qaDays: number; enteredAt: string; ongoing: boolean; caseType: string }> = [];
     const qaDurationSamplesHours: number[] = [];
+    const repairedCasesQaDurationHours: number[] = [];
+    const nonRepairedCasesQaDurationHours: number[] = [];
 
     let totalQaHours = 0;
     let qaOrdersCount = 0;
@@ -3712,9 +4223,17 @@ export default function DashboardMultimodular() {
     let doaCount = 0;
     let currentlyInQaCount = 0;
     let qaOrdersWithHistory = 0;
+    let qaReentryCount = 0;
+    let repairedCasesCount = 0;
+    let repairedCasesReentryCount = 0;
+    let nonRepairedCasesCount = 0;
+    let nonRepairedCasesReentryCount = 0;
 
     filteredOrders.forEach((order) => {
       const history = getOrderHistoryEntries(order);
+      const hasRepairPath = hasOrderPassedThroughRepairStates(order);
+      const didReentry = didOrderReentryQaAfterDispatch(order);
+      const caseType = hasRepairPath ? 'reparado' : 'no_reparado';
 
       let qaHoursInListo = 0;
       let firstQaTimestamp = '';
@@ -3774,6 +4293,18 @@ export default function DashboardMultimodular() {
       totalQaHours += qaHoursInListo;
       qaDurationSamplesHours.push(qaHoursInListo);
 
+      if (caseType === 'reparado') {
+        repairedCasesCount += 1;
+        repairedCasesQaDurationHours.push(qaHoursInListo);
+        if (didReentry) repairedCasesReentryCount += 1;
+      } else {
+        nonRepairedCasesCount += 1;
+        nonRepairedCasesQaDurationHours.push(qaHoursInListo);
+        if (didReentry) nonRepairedCasesReentryCount += 1;
+      }
+
+      if (didReentry) qaReentryCount += 1;
+
       topQaAgingRows.push({
         number: String(order?.number || order?.id || 'Sin número'),
         equipment: order?.asset?.title || order?.name || 'Equipo sin nombre',
@@ -3782,6 +4313,7 @@ export default function DashboardMultimodular() {
         qaDays: Number((qaHoursInListo / 24).toFixed(2)),
         enteredAt: formatDateTime(firstQaTimestamp || order?.modified_at || order?.updated_at || order?.created_at),
         ongoing: currentlyInQa,
+        caseType,
       });
 
       const week = getWeekBucket(firstQaTimestamp || order?.created_at || order?.modified_at || '');
@@ -3814,8 +4346,12 @@ export default function DashboardMultimodular() {
     const qaFailureRate = qaOrdersCount ? (rejectedCount / qaOrdersCount) * 100 : 0;
     const doaRate = filteredOrders.length ? (doaCount / filteredOrders.length) * 100 : 0;
     const historyCoverage = qaOrdersCount ? (qaOrdersWithHistory / qaOrdersCount) * 100 : 0;
+    const qaReentryRate = qaOrdersCount ? (qaReentryCount / qaOrdersCount) * 100 : 0;
 
     const sortedDurations = [...qaDurationSamplesHours].sort((a, b) => a - b);
+    const sortedRepairedDurations = [...repairedCasesQaDurationHours].sort((a, b) => a - b);
+    const sortedNonRepairedDurations = [...nonRepairedCasesQaDurationHours].sort((a, b) => a - b);
+
     const pickPercentile = (values: number[], percentile: number) => {
       if (!values.length) return 0;
       const index = Math.min(values.length - 1, Math.max(0, Math.ceil((percentile / 100) * values.length) - 1));
@@ -3824,6 +4360,13 @@ export default function DashboardMultimodular() {
 
     const medianQaHours = pickPercentile(sortedDurations, 50);
     const p90QaHours = pickPercentile(sortedDurations, 90);
+    const medianRepairedHours = pickPercentile(sortedRepairedDurations, 50);
+    const p90RepairedHours = pickPercentile(sortedRepairedDurations, 90);
+    const medianNonRepairedHours = pickPercentile(sortedNonRepairedDurations, 50);
+    const p90NonRepairedHours = pickPercentile(sortedNonRepairedDurations, 90);
+
+    const avgRepairedHours = repairedCasesCount ? repairedCasesQaDurationHours.reduce((a, b) => a + b, 0) / repairedCasesCount : 0;
+    const avgNonRepairedHours = nonRepairedCasesCount ? nonRepairedCasesQaDurationHours.reduce((a, b) => a + b, 0) / nonRepairedCasesCount : 0;
 
     const weeklyData = Array.from(weeklyBuckets.entries())
       .sort(([a], [b]) => a.localeCompare(b))
@@ -3863,6 +4406,24 @@ export default function DashboardMultimodular() {
       currentlyInQaCount,
       historyCoverage: Number(historyCoverage.toFixed(1)),
       doaRate: Number(doaRate.toFixed(1)),
+      qaReentryCount,
+      qaReentryRate: Number(qaReentryRate.toFixed(1)),
+      repairedCasesMetrics: {
+        count: repairedCasesCount,
+        avgDays: Number((avgRepairedHours / 24).toFixed(2)),
+        medianDays: Number((medianRepairedHours / 24).toFixed(2)),
+        p90Days: Number((p90RepairedHours / 24).toFixed(2)),
+        reentryCount: repairedCasesReentryCount,
+        reentryRate: repairedCasesCount ? Number(((repairedCasesReentryCount / repairedCasesCount) * 100).toFixed(1)) : 0,
+      },
+      nonRepairedCasesMetrics: {
+        count: nonRepairedCasesCount,
+        avgDays: Number((avgNonRepairedHours / 24).toFixed(2)),
+        medianDays: Number((medianNonRepairedHours / 24).toFixed(2)),
+        p90Days: Number((p90NonRepairedHours / 24).toFixed(2)),
+        reentryCount: nonRepairedCasesReentryCount,
+        reentryRate: nonRepairedCasesCount ? Number(((nonRepairedCasesReentryCount / nonRepairedCasesCount) * 100).toFixed(1)) : 0,
+      },
       weeklyData: weeklyData.length ? weeklyData : QA_RESULT_DATA,
       rejectionRows: rejectionRows.slice(0, 20),
       topQaAgingRows: allAgingSorted,
@@ -4069,19 +4630,14 @@ export default function DashboardMultimodular() {
   const technicianProductivitySlaData = useMemo(() => {
     return technicianRankingData.slice(0, 8).map((item) => {
       const relatedOrders = filteredOrders.filter((order) => extractTechnicianFromOrder(order) === item.name);
-      const inSla3 = relatedOrders.filter((order) => getOrderProcessingDays(order) <= 3).length;
-      const inSla5 = relatedOrders.filter((order) => {
-        const days = getOrderProcessingDays(order);
-        return days > 3 && days <= 5;
-      }).length;
       const outSla7 = relatedOrders.filter((order) => getOrderProcessingDays(order) > 7).length;
 
       return {
         name: item.name,
-        Reparadas: item.repairs + item.qc,
-        'SLA ≤3d': inSla3,
-        'SLA 3-5d': inSla5,
-        'Fuera +7d': outSla7,
+        Asignadas: item.os,
+        'En reparación': item.repairs + item.qc,
+        Cerradas: item.dispatches,
+        'Fuera SLA': outSla7,
       };
     });
   }, [technicianRankingData, filteredOrders]);
@@ -4255,7 +4811,7 @@ export default function DashboardMultimodular() {
 
     return [
       { number: 'TCGT-53101', date: '15/04/2026 10:15', product: 'Screen iP 15', equipment: 'iPhone 15', status: 'Despachado', technician: 'Alejandra P.', leadTime: '2.1 d' },
-      { number: 'TCGT-53100', date: '15/04/2026 09:48', product: 'Batt S24 Ultra', equipment: 'Samsung S24 Ultra', status: 'Nota de crédito', technician: 'Steven Obed', leadTime: 'n/d' },
+      { number: 'TCGT-53100', date: '15/04/2026 09:48', product: 'Batt S24 Ultra', equipment: 'Samsung S24 Ultra', status: 'Nota de crédito', technician: 'Kevin Chicas Franco', leadTime: 'n/d' },
       { number: 'TCGT-53098', date: '14/04/2026 16:21', product: 'Flex iP 13', equipment: 'iPhone 13', status: 'Despachado', technician: 'Laura Esther', leadTime: '3.0 d' },
     ];
   }, [hasLiveData, bodegaFilteredOrders]);
@@ -5123,6 +5679,14 @@ export default function DashboardMultimodular() {
   }, [bonusFilteredRows]);
   // ──────────────────────────────────────────────────────────────────────────
 
+  if (!authChecked) {
+    return <div className="min-h-screen bg-slate-100 text-slate-600 flex items-center justify-center text-sm">Validando sesión…</div>;
+  }
+
+  if (authChecked && !authUser) {
+    return <div className="min-h-screen bg-slate-100 text-slate-600 flex items-center justify-center text-sm">Redirigiendo a login…</div>;
+  }
+
   return (
     <div className="bg-slate-50 min-h-screen p-6 lg:p-10 font-sans">
       {/* HEADER SECTION */}
@@ -5134,6 +5698,36 @@ export default function DashboardMultimodular() {
           </Flex>
           <Title className="text-3xl font-extrabold text-slate-900 tracking-tight">Dashboard BI GURBANO</Title>
           <Text className="text-slate-500 font-medium">Centro de Servicio TechCorps Guatemala · Vista ejecutiva</Text>
+          {authUser && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-medium text-slate-700">
+                {displayName}
+              </span>
+              {authUser.role && (
+                <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 font-medium text-blue-700 capitalize">
+                  {authUser.role}
+                </span>
+              )}
+              {!canSeeAllAreas && accessibleAreas.length > 0 && (
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">
+                  Áreas: {accessibleAreas.join(', ')}
+                </span>
+              )}
+            </div>
+          )}
+          {authUser?.role === 'admin' && (
+            <div className="mt-2">
+              <a href="/admin/users" className="text-xs text-indigo-500 hover:text-indigo-700 underline">
+                Gestionar usuarios
+              </a>
+            </div>
+          )}
+          <button
+            onClick={handleLogout}
+            className="mt-2 text-xs text-slate-400 hover:text-red-500 transition-colors"
+          >
+            Cerrar sesión
+          </button>
         </div>
 
         <div className="flex flex-col items-end gap-2">
@@ -5196,22 +5790,24 @@ export default function DashboardMultimodular() {
       <TabGroup>
         <TabList className="mb-8" variant="solid">
           <Tab icon={BarChart3}>📊 Gerencial</Tab>
-          <Tab icon={Truck}>🚚 Backoffice</Tab>
-          <Tab icon={Settings}>🔧 Taller</Tab>
-          <Tab icon={Package}>📦 Bodega</Tab>
-          <Tab icon={ShieldCheck}>✅ Calidad</Tab>
-          <Tab icon={CreditCard}>💰 Claims</Tab>
-          <Tab icon={TrendingUp}>📤 Subir Claims</Tab>
-          <Tab icon={Activity}>🏅 Bono Técnico</Tab>
+          <Tab className={canSeeArea('Backoffice') ? '' : 'hidden'} icon={Truck}>🚚 Backoffice</Tab>
+          <Tab className={canSeeArea('Taller') ? '' : 'hidden'} icon={Settings}>🔧 Taller</Tab>
+          <Tab className={canSeeArea('Bodega') ? '' : 'hidden'} icon={Package}>📦 Bodega</Tab>
+          <Tab className={canSeeAnyArea('Calidad', 'QA') ? '' : 'hidden'} icon={ShieldCheck}>✅ Calidad</Tab>
+          <Tab className={canSeeArea('Claims') ? '' : 'hidden'} icon={CreditCard}>💰 Claims</Tab>
+          <Tab className={canSeeAnyArea('Subir Claims', 'Claims') ? '' : 'hidden'} icon={TrendingUp}>📤 Subir Claims</Tab>
+          <Tab className={canSeeAnyArea('Bono Técnico', 'Taller') ? '' : 'hidden'} icon={Activity}>🏅 Bono Técnico</Tab>
         </TabList>
         <div className="flex justify-end px-4 pb-2">
-          <Link
-            href="/despacho"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
-          >
-            <Truck className="w-3.5 h-3.5" />
-            Módulo de Despacho
-          </Link>
+          {(canSeeAllAreas || canSeeArea('Despacho')) && (
+            <Link
+              href="/despacho"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+            >
+              <Truck className="w-3.5 h-3.5" />
+              Módulo de Despacho
+            </Link>
+          )}
         </div>
 
         <TabPanels>
@@ -5430,13 +6026,16 @@ export default function DashboardMultimodular() {
                   }}
                 />
                 <Grid numItemsSm={1} numItemsMd={2} className="gap-3 mt-4">
-                  {tatByTechnicianCards.map((item) => (
-                    <div key={item.name} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                      <Text className="text-xs font-semibold text-slate-500 uppercase">{item.name}</Text>
-                      <Metric className="mt-1 text-xl">{item.tat}</Metric>
-                      <Text className="text-xs text-slate-500">{item.repaired} cerradas · {item.sla}% FTF</Text>
-                    </div>
-                  ))}
+                  {tatByTechnicianCards.map((item) => {
+                    const ftfLevel = getFtfVisualLevel(item.sla);
+                    return (
+                      <div key={item.name} className={`rounded-xl border p-3 ${ftfLevel.cardClass}`}>
+                        <Text className="text-xs font-semibold text-slate-500 uppercase">{item.name}</Text>
+                        <Metric className={`mt-1 text-xl ${ftfLevel.textClass}`}>{item.tat}</Metric>
+                        <Text className="text-xs text-slate-600">{item.closed} cerradas · {item.closure}% cierre · <span className={`font-bold ${ftfLevel.textClass}`}>{item.sla}% FTF</span> · {ftfLevel.label}</Text>
+                      </div>
+                    );
+                  })}
                 </Grid>
               </Card>
 
@@ -5473,13 +6072,13 @@ export default function DashboardMultimodular() {
 
               <Card>
                 <Title>Productividad por Técnico</Title>
-                <Text className="mt-2 text-xs text-slate-500">Comparativo entre reparadas y cumplimiento por tier de SLA.</Text>
+                <Text className="mt-2 text-xs text-slate-500">Comparativo entre carga asignada, avance técnico, cierres y casos fuera de SLA.</Text>
                 <BarChart
                   className="mt-6 h-80"
                   data={technicianProductivitySlaData}
                   index="name"
-                  categories={["Reparadas", "SLA ≤3d", "SLA 3-5d", "Fuera +7d"]}
-                  colors={["blue", "emerald", "amber", "rose"]}
+                  categories={["Asignadas", "En reparación", "Cerradas", "Fuera SLA"]}
+                  colors={["slate", "blue", "emerald", "rose"]}
                   layout="vertical"
                   yAxisWidth={110}
                 />
@@ -5538,12 +6137,12 @@ export default function DashboardMultimodular() {
           </TabPanel>
 
           {/* --- PESTAÑA 2: BACKOFFICE --- */}
-          <TabPanel>
+          <TabPanel className={canSeeArea('Backoffice') ? '' : 'hidden'}>
             <Grid numItemsSm={1} numItemsLg={6} className="gap-6 mb-6">
               <Card decoration="left" decorationColor="indigo">
                 <Text className="text-slate-500">Pre-alertas recibidas</Text>
                 <Metric>{backofficeSummary.totalRequests}</Metric>
-                <Text className="mt-2 text-xs text-slate-500 font-medium">Fuente: Google Sheets</Text>
+                <Text className="mt-2 text-xs text-slate-500 font-medium">Fuente: Supabase</Text>
               </Card>
               <Card decoration="left" decorationColor="cyan">
                 <Text className="text-slate-500">Vinculadas a Orderry</Text>
@@ -5624,7 +6223,11 @@ export default function DashboardMultimodular() {
                     <div>
                       <Text className="font-bold text-blue-900">{backofficeStatus}</Text>
                       <Text className="text-xs text-blue-600">
-                        {backofficeData.source === 'orderry-only' ? 'Fuente actual: Orderry' : 'Fuente combinada: formularios + Orderry'}
+                        {backofficeData.source === 'orderry-only'
+                          ? 'Fuente actual: Orderry'
+                          : String(backofficeData.source || '').startsWith('googlesheets')
+                            ? 'Fuente actual: Google Sheets + Orderry'
+                            : 'Fuente combinada: formularios + Orderry'}
                       </Text>
                     </div>
                   </div>
@@ -5654,11 +6257,69 @@ export default function DashboardMultimodular() {
               <Card>
                 <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
                   <div>
+                    <Title>Unidades Pendientes de Recolectar / Ingresar</Title>
+                    <Text className="mt-2 text-xs text-slate-500">Incluye fallback de cruce por agencia + marca/modelo cuando IMEI/Serie/Folio no coinciden.</Text>
+                  </div>
+                  <Badge color={pendingBackofficeRows.length > 0 ? 'amber' : 'emerald'}>
+                    {pendingBackofficeRows.length} pendientes visibles
+                  </Badge>
+                </Flex>
+
+                <div className="mt-4 overflow-x-auto max-h-[320px]">
+                  <table className="min-w-full border border-slate-200 text-sm">
+                    <thead className="bg-amber-50 text-slate-800 sticky top-0">
+                      <tr>
+                        <th className="border border-amber-200 px-3 py-2 text-left">Cliente</th>
+                        <th className="border border-amber-200 px-3 py-2 text-left">Agencia / Cliente</th>
+                        <th className="border border-amber-200 px-3 py-2 text-left">Marca / Modelo</th>
+                        <th className="border border-amber-200 px-3 py-2 text-left">Ticket / IMEI-Folio</th>
+                        <th className="border border-amber-200 px-3 py-2 text-left">Fecha solicitud</th>
+                        <th className="border border-amber-200 px-3 py-2 text-left">Pista de cruce</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pendingBackofficeRows.length > 0 ? pendingBackofficeRows.map((row, idx) => {
+                        const parsed = extractBackofficeBrandModel(row.equipmentName);
+                        return (
+                          <tr key={`pending-${row.client}-${row.reference}-${idx}`} className="bg-white even:bg-amber-50/40">
+                            <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{row.client}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.customer || 'Sin agencia'}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-slate-700">
+                              <div className="font-medium text-slate-900">{parsed.brand}</div>
+                              <div className="text-xs text-slate-500">{parsed.model}</div>
+                            </td>
+                            <td className="border border-slate-200 px-3 py-2 text-slate-700">
+                              <div className="font-medium text-slate-900">{row.reference || 'Sin ticket'}</div>
+                              <div className="text-xs text-slate-500">{row.trackingCode || 'Sin IMEI/folio'}</div>
+                            </td>
+                            <td className="border border-slate-200 px-3 py-2 text-slate-700">{formatDateTime(row.requestAt)}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.matchMethod || 'Sin cruce por identificador'}</td>
+                          </tr>
+                        );
+                      }) : (
+                        <tr className="bg-white">
+                          <td colSpan={6} className="border border-slate-200 px-3 py-6 text-center text-slate-500">No hay unidades pendientes con los filtros actuales.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+
+              <Card>
+                <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
+                  <div>
                     <Title>Detalle de Pre-alertas Logísticas</Title>
                     <Text className="mt-2 text-xs text-slate-500">Solicitud, recolección e ingreso a Orderry por cliente.</Text>
                   </div>
-                  <Badge color={backofficeData.source === 'sheets+orderry' ? 'emerald' : backofficeData.connected ? 'blue' : 'amber'}>
-                    {backofficeData.source === 'sheets+orderry' ? 'Google Sheets + Orderry' : backofficeData.connected ? 'Orderry conectado' : 'Esperando acceso'}
+                  <Badge color={(isGoogleSheetsSource || isSupabaseSource || hasBackofficeData) ? 'emerald' : (backofficeData.connected || isOrderryOnlySource) ? 'blue' : 'amber'}>
+                      {isGoogleSheetsSource
+                        ? 'Google Sheets + Orderry'
+                        : isSupabaseSource
+                          ? 'Supabase + Orderry'
+                          : (backofficeData.connected || isOrderryOnlySource || hasBackofficeData)
+                            ? 'Orderry conectado'
+                            : 'Esperando acceso'}
                   </Badge>
                 </Flex>
                 <div className="mt-4 flex gap-3 flex-wrap">
@@ -5681,6 +6342,29 @@ export default function DashboardMultimodular() {
                     placeholder="Buscar ticket, folio o IMEI"
                     className="min-w-[240px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none"
                   />
+                  <input
+                    type="date"
+                    value={backofficeFromDate}
+                    onChange={(e) => setBackofficeFromDate(e.target.value)}
+                    className="min-w-[160px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none"
+                  />
+                  <input
+                    type="date"
+                    value={backofficeToDate}
+                    onChange={(e) => setBackofficeToDate(e.target.value)}
+                    className="min-w-[160px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none"
+                  />
+                  <Select value={backofficeSortOrder} onValueChange={(value) => setBackofficeSortOrder(value as 'ASC' | 'DESC')} className="w-[190px]">
+                    <SelectItem value="DESC">Fecha: mayor a menor</SelectItem>
+                    <SelectItem value="ASC">Fecha: menor a mayor</SelectItem>
+                  </Select>
+                  <button
+                    type="button"
+                    onClick={exportBackofficeExcel}
+                    className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700"
+                  >
+                    Descargar Excel
+                  </button>
                 </div>
                 <div className="mt-6 overflow-x-auto max-h-[420px]">
                   <table className="min-w-full border border-slate-200 text-sm">
@@ -5693,7 +6377,8 @@ export default function DashboardMultimodular() {
                         <th className="border border-slate-600 px-3 py-2 text-left">Ingreso Orderry</th>
                         <th className="border border-slate-600 px-3 py-2 text-right">Hrs recolección</th>
                         <th className="border border-slate-600 px-3 py-2 text-right">Días Solicitud → Orderry</th>
-                        <th className="border border-slate-600 px-3 py-2 text-right">Hrs Solicitud → Orderry</th>
+                        <th className="border border-slate-600 px-3 py-2 text-right">Días Solicitud → Cierre/Ganada</th>
+                        <th className="border border-slate-600 px-3 py-2 text-left">Histórico detectado</th>
                         <th className="border border-slate-600 px-3 py-2 text-left">Cruce</th>
                         <th className="border border-slate-600 px-3 py-2 text-left">Estado</th>
                       </tr>
@@ -5708,11 +6393,14 @@ export default function DashboardMultimodular() {
                             <div className="text-xs text-slate-500">{row.equipmentName || row.matchedOrderNumber || row.sheetTitle}</div>
                           </td>
                           <td className="border border-slate-200 px-3 py-2 text-slate-700">{formatDateTime(row.requestAt)}</td>
-                          <td className="border border-slate-200 px-3 py-2 text-slate-700">{formatDateTime(row.collectedAt)}</td>
-                          <td className="border border-slate-200 px-3 py-2 text-slate-700">{formatDateTime(row.orderryAt)}</td>
+                          <td className="border border-slate-200 px-3 py-2 text-slate-700">{formatBackofficeCollection(row)}</td>
+                          <td className="border border-slate-200 px-3 py-2 text-slate-700">{formatBackofficeIngreso(row)}</td>
                           <td className="border border-slate-200 px-3 py-2 text-right text-slate-700">{(row.collectionHours ?? calculateDiffHours(row.requestAt, row.collectedAt)) === null ? 'n/d' : (row.collectionHours ?? calculateDiffHours(row.requestAt, row.collectedAt))?.toFixed(1)}</td>
                           <td className="border border-slate-200 px-3 py-2 text-right text-slate-700">{(row.systemDays ?? calculateDiffDays(row.requestAt, row.orderryAt)) === null ? 'n/d' : (row.systemDays ?? calculateDiffDays(row.requestAt, row.orderryAt))?.toFixed(1)}</td>
-                          <td className="border border-slate-200 px-3 py-2 text-right text-slate-700">{(row.systemHours ?? calculateDiffHours(row.requestAt, row.orderryAt)) === null ? 'n/d' : (row.systemHours ?? calculateDiffHours(row.requestAt, row.orderryAt))?.toFixed(1)}</td>
+                          <td className="border border-slate-200 px-3 py-2 text-right text-slate-700">{(row.closedWonDays ?? calculateDiffDays(row.requestAt, row.closedWonAt || null)) === null ? 'n/d' : (row.closedWonDays ?? calculateDiffDays(row.requestAt, row.closedWonAt || null))?.toFixed(1)}</td>
+                          <td className="border border-slate-200 px-3 py-2 text-slate-700">
+                            <Badge color={row.historicalDetected ? 'amber' : 'emerald'}>{row.historicalDetected ? 'Sí' : 'No'}</Badge>
+                          </td>
                           <td className="border border-slate-200 px-3 py-2 text-slate-700">
                             <div>{row.matchMethod || 'Pendiente'}</div>
                             <div className="text-xs text-slate-500">{row.matchedOrderNumber || 'Sin orden'}</div>
@@ -5723,7 +6411,7 @@ export default function DashboardMultimodular() {
                         </tr>
                       )) : (
                         <tr className="bg-white">
-                          <td colSpan={10} className="border border-slate-200 px-3 py-6 text-center text-slate-500">Aún no hay filas visibles desde Google Sheets o faltan credenciales de acceso.</td>
+                          <td colSpan={11} className="border border-slate-200 px-3 py-6 text-center text-slate-500">Aún no hay filas visibles desde Supabase o faltan credenciales de acceso.</td>
                         </tr>
                       )}
                     </tbody>
@@ -5874,8 +6562,8 @@ export default function DashboardMultimodular() {
           </TabPanel>
 
           {/* --- PESTAÑA 3: TALLER (CORE) --- */}
-          <TabPanel>
-            <Grid numItemsSm={1} numItemsLg={6} className="gap-6 mb-8">
+          <TabPanel className={canSeeArea('Taller') ? '' : 'hidden'}>
+            <Grid numItemsSm={1} numItemsLg={4} className="gap-6 mb-8">
               <Card>
                 <Text className="text-slate-500">TAT Técnico Promedio · Días</Text>
                 <Metric>{technicianSummary.tatDays}</Metric>
@@ -5897,13 +6585,28 @@ export default function DashboardMultimodular() {
                 <Text className="mt-2 text-xs text-slate-500">Equipos reparados por día</Text>
               </Card>
               <Card>
-                <Text className="text-slate-500">First Time Fix (FTF)</Text>
+                <Text className="text-slate-500">First Time Fix (FTF 30D)</Text>
                 <Metric>{technicianSummary.ftf}</Metric>
-                <ProgressBar value={Number.parseFloat(technicianSummary.ftf)} color="emerald" className="mt-2" />
+                <ProgressBar value={Number.parseFloat(technicianSummary.ftf)} color={getFtfVisualLevel(Number.parseFloat(technicianSummary.ftf)).textClass.includes('emerald') ? 'emerald' : getFtfVisualLevel(Number.parseFloat(technicianSummary.ftf)).textClass.includes('amber') ? 'amber' : 'rose'} className="mt-2" />
               </Card>
               <Card className="bg-indigo-600 text-white shadow-lg shadow-indigo-200">
                 <Text className="text-indigo-100">Total OS Entregadas</Text>
                 <Metric className="text-white">{technicianSummary.delivered}</Metric>
+              </Card>
+              <Card className={`border ${getSemaforoClass(getClosureLevel(Number.parseFloat(technicianSummary.closure)))}`}>
+                <Text className="text-current/80">% Cierre</Text>
+                <Metric className="text-current">{technicianSummary.closure}</Metric>
+                <Text className="mt-2 text-xs">Meta: 85%+</Text>
+              </Card>
+              <Card className={`border ${getSemaforoClass(getReentryLevel(Number.parseFloat(technicianSummary.reentry30)))}`}>
+                <Text className="text-current/80">Reingreso 30D</Text>
+                <Metric className="text-current">{technicianSummary.reentry30}</Metric>
+                <Text className="mt-2 text-xs">Meta: &lt; 5%</Text>
+              </Card>
+              <Card className={`border ${getSemaforoClass(getWipLevel(technicianSummary.wipPct))}`}>
+                <Text className="text-current/80">Órdenes en Proceso (WIP)</Text>
+                <Metric className="text-current">{technicianSummary.wip}</Metric>
+                <Text className="mt-2 text-xs">{technicianSummary.wipPct}% de la carga asignada</Text>
               </Card>
             </Grid>
 
@@ -5945,6 +6648,9 @@ export default function DashboardMultimodular() {
                       <th className="border border-lime-700 px-3 py-2 text-center">No Reparado</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">Controles_QC</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">WIP</th>
+                      <th className="border border-lime-700 px-3 py-2 text-center">% Cierre</th>
+                      <th className="border border-lime-700 px-3 py-2 text-center">FTF 30D</th>
+                      <th className="border border-lime-700 px-3 py-2 text-center">Reingreso 30D</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">SLA</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">Cerrada</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">Cerró / Despachó</th>
@@ -5960,6 +6666,9 @@ export default function DashboardMultimodular() {
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.noReparado}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.controlesQc}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.wip}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-center font-semibold">{row.closurePct}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-center font-semibold">{row.ftf30}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-center">{row.reentry30}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.sla}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.cerrada}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center whitespace-nowrap">{row.closingOwner}</td>
@@ -6116,7 +6825,7 @@ export default function DashboardMultimodular() {
           </TabPanel>
 
           {/* --- PESTAÑA 4: BODEGA --- */}
-          <TabPanel>
+          <TabPanel className={canSeeArea('Bodega') ? '' : 'hidden'}>
              <Card className="mb-6">
                <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
                  <div>
@@ -6628,7 +7337,7 @@ export default function DashboardMultimodular() {
           </TabPanel>
 
           {/* --- PESTAÑA 5: QA --- */}
-          <TabPanel>
+          <TabPanel className={canSeeAnyArea('Calidad', 'QA') ? '' : 'hidden'}>
              <Grid numItemsSm={1} numItemsLg={4} className="gap-6 mb-8">
                 <Card>
                    <Text className="text-slate-500">QC Failure Rate</Text>
@@ -6765,6 +7474,7 @@ export default function DashboardMultimodular() {
                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Equipo</th>
                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Técnico</th>
                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado actual</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Tipo de Caso</th>
                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Entró a QC</th>
                        <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">TAT QC (días)</th>
                        <th className="border border-slate-200 px-3 py-2 text-center font-semibold text-slate-700">Activo</th>
@@ -6780,6 +7490,11 @@ export default function DashboardMultimodular() {
                              <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.equipment}</td>
                              <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.technician}</td>
                              <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.status}</td>
+                            <td className="border border-slate-200 px-3 py-2 text-slate-700">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${row.caseType === 'reparado' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                                {row.caseType === 'reparado' ? 'Reparado' : 'No-Reparado'}
+                              </span>
+                            </td>
                              <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.enteredAt}</td>
                              <td className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-900">{row.qaDays.toFixed(2)}</td>
                              <td className="border border-slate-200 px-3 py-2 text-center">
@@ -6791,7 +7506,7 @@ export default function DashboardMultimodular() {
                          ))
                      ) : (
                        <tr className="bg-white">
-                         <td colSpan={7} className="border border-slate-200 px-3 py-6 text-center text-slate-500">No hay órdenes con permanencia en QC para el período filtrado.</td>
+                        <td colSpan={8} className="border border-slate-200 px-3 py-6 text-center text-slate-500">No hay órdenes con permanencia en QC para el período filtrado.</td>
                        </tr>
                      )}
                    </tbody>
@@ -6940,7 +7655,7 @@ export default function DashboardMultimodular() {
           </TabPanel>
 
           {/* --- PESTAÑA 6: CLAIMS --- */}
-          <TabPanel>
+          <TabPanel className={canSeeArea('Claims') ? '' : 'hidden'}>
              <Grid numItemsSm={1} numItemsLg={4} className="gap-6 mb-8">
                 <Card decoration="top" decorationColor="blue">
                    <Text className="text-slate-500 uppercase text-xs">CASOS CERRADOS XIAOMI</Text>
@@ -6967,6 +7682,50 @@ export default function DashboardMultimodular() {
              <Grid numItemsLg={2} className="gap-6 mb-6">
                 <Card>
                    <Title>Validador Xiaomi por IMEI / Serie</Title>
+                {/* Reingresos a QA */}
+                <Card className="mt-6">
+                  <Title>Órdenes que Reingresan a Control de Calidad (Post-Despacho)</Title>
+                  <Text className="mt-2 text-xs text-slate-500">Órdenes que volvieron a entrar en QA después de haber sido despachadas. Validar timelines y causas.</Text>
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="min-w-full border border-slate-200 text-sm">
+                      <thead className="bg-slate-100">
+                        <tr>
+                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
+                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Equipo</th>
+                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Técnico</th>
+                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Tipo de Caso</th>
+                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado Actual</th>
+                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">TAT Total (días)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {qaOperationalMetrics.topQaAgingRows.filter((row) => didOrderReentryQaAfterDispatch({ status: { name: row.status } })).length ? (
+                          qaOperationalMetrics.topQaAgingRows
+                            .filter((row) => didOrderReentryQaAfterDispatch({ status: { name: row.status } }))
+                            .slice(0, 20)
+                            .map((row, idx) => (
+                              <tr key={`${row.number}-reentry-${idx}`} className="bg-white even:bg-slate-50">
+                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{row.number}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.equipment}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.technician}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-slate-700">
+                                  <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${row.caseType === 'reparado' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                                    {row.caseType === 'reparado' ? 'Reparado' : 'No-Reparado'}
+                                  </span>
+                                </td>
+                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.status}</td>
+                                <td className="border border-slate-200 px-3 py-2 text-right font-semibold text-rose-700">{row.qaDays.toFixed(2)}</td>
+                              </tr>
+                            ))
+                        ) : (
+                          <tr className="bg-white">
+                            <td colSpan={6} className="border border-slate-200 px-3 py-6 text-center text-slate-500">Sin reingresos a QA en el período filtrado.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
                    <Text className="mt-2 text-sm text-slate-600">
                      Pegue aquí el listado copiado o exportado desde la plataforma Xiaomi. El panel marcará automáticamente qué OS ya fueron cargadas.
                    </Text>
@@ -7103,7 +7862,7 @@ export default function DashboardMultimodular() {
           </TabPanel>
 
           {/* --- PESTAÑA 7: SUBIR CLAIMS --- */}
-          <TabPanel>
+          <TabPanel className={canSeeAnyArea('Subir Claims', 'Claims') ? '' : 'hidden'}>
             <Card className="mb-6">
               <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
                 <div>
@@ -7460,7 +8219,7 @@ export default function DashboardMultimodular() {
           </TabPanel>
 
           {/* ─── PESTAÑA 8: MÓDULO DE BONO TÉCNICO ─────────────────────── */}
-          <TabPanel>
+          <TabPanel className={canSeeAnyArea('Bono Técnico', 'Taller') ? '' : 'hidden'}>
             {/* Header */}
             <Card className="mb-6">
               <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
@@ -7663,6 +8422,25 @@ export default function DashboardMultimodular() {
                 </Card>
               </Grid>
             )}
+              <Grid numItemsSm={1} numItemsLg={3} className="gap-6 mb-8">
+                <Card className={getSemaforoClass(getReentryLevel(qaOperationalMetrics.qaReentryRate))}>
+                  <Text className="font-semibold">Reingresos a QA (30D)</Text>
+                  <Metric>{qaOperationalMetrics.qaReentryRate}%</Metric>
+                  <Text className="text-xs mt-2">{qaOperationalMetrics.qaReentryCount} de {qaOperationalMetrics.qaOrdersCount} órdenes reingresaron</Text>
+                </Card>
+                <Card>
+                  <Text className="text-slate-500">Casos Reparados - TAT Promedio</Text>
+                  <Metric>{qaOperationalMetrics.repairedCasesMetrics.avgDays.toFixed(2)} días</Metric>
+                  <Text className="text-xs text-slate-500">Mediana: {qaOperationalMetrics.repairedCasesMetrics.medianDays.toFixed(2)}d · P90: {qaOperationalMetrics.repairedCasesMetrics.p90Days.toFixed(2)}d</Text>
+                  <Text className="text-xs text-slate-500 mt-2">Órdenes: {qaOperationalMetrics.repairedCasesMetrics.count} · Reingresos: {qaOperationalMetrics.repairedCasesMetrics.reentryRate}%</Text>
+                </Card>
+                <Card>
+                  <Text className="text-slate-500">Casos No-Reparados - TAT Promedio</Text>
+                  <Metric>{qaOperationalMetrics.nonRepairedCasesMetrics.avgDays.toFixed(2)} días</Metric>
+                  <Text className="text-xs text-slate-500">Mediana: {qaOperationalMetrics.nonRepairedCasesMetrics.medianDays.toFixed(2)}d · P90: {qaOperationalMetrics.nonRepairedCasesMetrics.p90Days.toFixed(2)}d</Text>
+                  <Text className="text-xs text-slate-500 mt-2">Órdenes: {qaOperationalMetrics.nonRepairedCasesMetrics.count} · Reingresos: {qaOperationalMetrics.nonRepairedCasesMetrics.reentryRate}%</Text>
+                </Card>
+              </Grid>
             {bonusSummary.byTechnician.length === 0 && (
               <Card className="mb-6">
                 <Text className="text-sm text-slate-400 text-center py-8">Sin datos en el período seleccionado.</Text>

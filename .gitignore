@@ -42,3 +42,17 @@ tempapp/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
+.env*.local
+
+# ISP scraper artifacts (secrets / debug)
+scripts/.isp_auth_state.json
+scripts/_isp_debug.html
+scripts/_isp_debug.png
+scripts/_isp_debug_frame.html
+scripts/_test_env.py
+scripts/__pycache__/
+**/__pycache__/
+*.pyc
+.next-dev/

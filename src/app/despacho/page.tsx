@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Plus,
   Trash2,
@@ -81,6 +82,7 @@ interface PlanDevolucion {
 interface Conduce {
   id: string;
   fecha: string;
+  despachadoPor?: string;
   doa: boolean;
   courrier: string;
   numeroGuia: string;
@@ -93,6 +95,28 @@ interface Conduce {
   cantObjetivo: number;
   unidadesDespachadas: UnidadDespachada[];
   unidadesDevolver: PlanDevolucion[];
+}
+
+const DEFAULT_CONDUCE_NUM = 43;
+const HISTORY_PAGE_SIZE = 20;
+
+function getNumericConduce(id: string): number {
+  const n = parseInt(String(id || '').replace(/\D/g, ''), 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+function buildNextConduceFromList(list: Conduce[]): string {
+  const maxFromList = list.reduce((max, c) => Math.max(max, getNumericConduce(c.id)), 0);
+  const next = Math.max(maxFromList, DEFAULT_CONDUCE_NUM) + 1;
+  return `TCSAL-${String(next).padStart(4, '0')}`;
+}
+
+function buildNextConduceFromLatestId(latestConduceId: string | null): string {
+  if (!latestConduceId) {
+    return `TCSAL-${String(DEFAULT_CONDUCE_NUM + 1).padStart(4, '0')}`;
+  }
+  const next = Math.max(getNumericConduce(latestConduceId), DEFAULT_CONDUCE_NUM) + 1;
+  return `TCSAL-${String(next).padStart(4, '0')}`;
 }
 
 interface AvailableOrder {
@@ -117,6 +141,31 @@ function nowTimestamp(): string {
   const fecha = d.toLocaleDateString('es-GT', { year: 'numeric', month: '2-digit', day: '2-digit' });
   const hora = d.toLocaleTimeString('es-GT', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
   return `${fecha} · ${hora}`;
+}
+
+function formatHistoryDateTime(value: string): { date: string; time: string } {
+  if (!value) return { date: '—', time: '' };
+
+  const localizedMatch = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s*[·-]\s*(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap])\.?\s*m\.?$/i);
+  if (localizedMatch) {
+    const day = localizedMatch[1].padStart(2, '0');
+    const month = localizedMatch[2].padStart(2, '0');
+    const year = localizedMatch[3];
+    let hour = Number(localizedMatch[4]);
+    const minute = localizedMatch[5].padStart(2, '0');
+    const meridiem = localizedMatch[6].toLowerCase();
+    if (meridiem === 'p' && hour !== 12) hour += 12;
+    if (meridiem === 'a' && hour === 12) hour = 0;
+    return { date: `${day}/${month}/${year}`, time: `${String(hour).padStart(2, '0')}:${minute}` };
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { date: value, time: '' };
+
+  return {
+    date: date.toLocaleDateString('es-GT', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+    time: date.toLocaleTimeString('es-GT', { hour: '2-digit', minute: '2-digit', hour12: false }),
+  };
 }
 
 /**
@@ -151,6 +200,9 @@ function estadoBadgeClass(estado: string): string {
 // ─── COMPONENTE PRINCIPAL ─────────────────────────────────────────────────────
 
 export default function DespachoPagina() {
+  const router = useRouter();
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authAllowed, setAuthAllowed] = useState(false);
   const [showApiSettings, setShowApiSettings] = useState(false);
   const [syncingAgencies, setSyncingAgencies] = useState(false);
 
@@ -159,7 +211,7 @@ export default function DespachoPagina() {
     try {
       const res = await fetch('/api/despacho/sync-agencies', { method: 'POST' });
       const data = await res.json();
-      if (data.ok) showNotification(`✅ ${data.synced} agencias sincronizadas en Google Sheets.`);
+      if (data.ok) showNotification(`✅ ${data.synced} agencias sincronizadas en Supabase.`);
       else showNotification(`⚠️ ${data.error || 'Error al sincronizar.'}`, 'error');
     } catch {
       showNotification('⚠️ No se pudo conectar con el servidor.', 'error');
@@ -219,12 +271,50 @@ export default function DespachoPagina() {
   const [scanMessage, setScanMessage] = useState({ text: '', type: '' });
   const [notificacion, setNotificacion] = useState<{ message: string; type: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [authRole, setAuthRole] = useState<string | null>(null);
+  const [dispatchUserName, setDispatchUserName] = useState('Usuario no identificado');
 
   // Disponibles para despachar (filtro por Tipo + Canal de Ingreso)
   const [availableOrders, setAvailableOrders] = useState<AvailableOrder[]>([]);
   const [availableLoading, setAvailableLoading] = useState(false);
 
   const mountedRef = useRef(false);
+
+  const loadConducesFromServer = async (page = 1) => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/despacho/save-sheet?page=${page}&pageSize=${HISTORY_PAGE_SIZE}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || 'No se pudo cargar historial de Supabase.');
+      }
+
+      const list: Conduce[] = Array.isArray(data?.items) ? data.items : [];
+      setConduces(list);
+      setHistoryPage(Number(data?.page || page));
+      setHistoryTotal(Number(data?.total || 0));
+      setConduceNum(buildNextConduceFromLatestId(data?.latestConduceId ? String(data.latestConduceId) : null));
+      localStorage.setItem('dispatch_conduces_v4', JSON.stringify(list));
+    } catch {
+      try {
+        const s = localStorage.getItem('dispatch_conduces_v4');
+        const list: Conduce[] = s ? JSON.parse(s) : [];
+        setConduces(list);
+        setHistoryPage(1);
+        setHistoryTotal(list.length);
+        setConduceNum(buildNextConduceFromList(list));
+      } catch {
+        setHistoryPage(1);
+        setHistoryTotal(0);
+        setConduceNum(`TCSAL-${String(DEFAULT_CONDUCE_NUM + 1).padStart(4, '0')}`);
+      }
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   // Persistencia (solo después del primer mount para no borrar con el estado inicial vacío)
   useEffect(() => {
@@ -234,15 +324,50 @@ export default function DespachoPagina() {
 
   // Carga inicial desde localStorage (solo cliente, evita hydration mismatch)
   useEffect(() => {
-    try {
-      const s = localStorage.getItem('dispatch_conduces_v4');
-      const list: Conduce[] = s ? JSON.parse(s) : [];
-      if (list.length > 0) setConduces(list);
-      const nums = list.map((c) => parseInt(c.id.replace(/\D/g, ''), 10)).filter((n) => !isNaN(n));
-      const lastSaved = parseInt(localStorage.getItem('dispatch_last_conduce_num') ?? '43', 10);
-      const next = Math.max(nums.length > 0 ? Math.max(...nums) : 0, lastSaved) + 1;
-      setConduceNum(`TCSAL-${String(next).padStart(4, '0')}`);
-    } catch { /* mantiene defaults */ }
+    let cancelled = false;
+
+    const validateAuth = async () => {
+      try {
+        const response = await fetch('/api/auth/me', { cache: 'no-store' });
+        if (!response.ok) {
+          if (!cancelled) {
+            setAuthAllowed(false);
+            setAuthChecked(true);
+            router.replace('/login?redirect=%2Fdespacho');
+          }
+          return;
+        }
+
+        const authData = await response.json();
+        const authUser = authData?.user;
+        const fullName = [authUser?.firstName, authUser?.lastName].filter(Boolean).join(' ').trim();
+        if (!cancelled) {
+          setAuthRole(typeof authUser?.role === 'string' ? authUser.role : null);
+          setDispatchUserName(fullName || authUser?.email || 'Usuario no identificado');
+        }
+
+        if (!cancelled) {
+          setAuthAllowed(true);
+          setAuthChecked(true);
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthAllowed(false);
+          setAuthChecked(true);
+          router.replace('/login?redirect=%2Fdespacho');
+        }
+      }
+    };
+
+    validateAuth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  useEffect(() => {
+    loadConducesFromServer(1);
     try {
       const se = localStorage.getItem('dispatch_extra_origins');
       if (se) setExtraOrigins(JSON.parse(se));
@@ -263,7 +388,7 @@ export default function DespachoPagina() {
       .finally(() => setCatalogLoading(false));
   }, []);
 
-  // Cargar directorio ORIGEN (Agencias/Dealers) — Orderry + Google Sheets fusionados
+  // Cargar directorio ORIGEN (Agencias/Dealers) — Orderry + Supabase fusionados
   useEffect(() => {
     const mergeAll = (orderry: string[], sheets: string[]) => {
       const all = [...orderry, ...sheets, ...extraOrigins];
@@ -415,9 +540,34 @@ export default function DespachoPagina() {
 
   // ── Lookup IMEI en Orderry ────────────────────────────────────────────────
   const lookupImei = async (imei: string) => {
-    const res = await fetch(`/api/despacho/imei-lookup?imei=${encodeURIComponent(imei)}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json() as Promise<{ found: boolean; orderId?: number | null; marca: string; modelo: string; producto: string; rawStatus: string; estadoGanado: string; ordenNumero?: string; tecnico?: string; cliente?: string; tipoOrden?: string; color?: string; reparada?: boolean | null; canalIngreso?: string; tipoIngreso?: string; grupo?: string }>;  
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(`/api/despacho/imei-lookup?imei=${encodeURIComponent(imei)}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          if (typeof data?.error === 'string' && data.error.trim()) {
+            message = data.error;
+          }
+        } catch {
+          // mantiene fallback HTTP
+        }
+        throw new Error(message);
+      }
+      return res.json() as Promise<{ found: boolean; orderId?: number | null; marca: string; modelo: string; producto: string; rawStatus: string; estadoGanado: string; ordenNumero?: string; tecnico?: string; cliente?: string; tipoOrden?: string; color?: string; reparada?: boolean | null; canalIngreso?: string; tipoIngreso?: string; grupo?: string }>;
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        throw new Error('Tiempo de espera agotado consultando Orderry. Intenta de nuevo.');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
   // ── Procesamiento de IMEI ─────────────────────────────────────────────────
@@ -593,32 +743,51 @@ export default function DespachoPagina() {
 
     setIsSaving(true);
 
-    // Persistir el número actual como último usado (sobrevive a eliminaciones)
-    try {
-      const n = parseInt(conduceNum.replace(/\D/g, ''), 10);
-      if (!isNaN(n)) localStorage.setItem('dispatch_last_conduce_num', String(n));
-    } catch { /* ignorar */ }
+    const normalizedConduceNum = conduceNum.trim().toUpperCase();
+    const existsLocal = conduces.some((c) => String(c.id || '').trim().toUpperCase() === normalizedConduceNum);
+    if (existsLocal) {
+      showNotification(`El No. Conduce ${normalizedConduceNum} ya existe. Debe ser único.`, 'error');
+      setIsSaving(false);
+      return;
+    }
 
     const nuevo: Conduce = {
-      id: conduceNum, fecha: nowTimestamp(), doa, courrier, numeroGuia, precinto,
+      id: normalizedConduceNum, fecha: nowTimestamp(), doa, courrier, numeroGuia, precinto,
+      despachadoPor: dispatchUserName,
       origen, operador, retail, dealer: dealer || 'Sin Dealer', sucursal: sucursal || 'Sin Sucursal',
       cantObjetivo: unidadesDespachadas.length, unidadesDespachadas, unidadesDevolver,
     };
-    setConduces((prev) => [nuevo, ...prev]);
-    setSelectedConduce(nuevo);
 
-    // ── Guardar conduce en Google Sheets (en segundo plano, sin bloquear UX)
-    fetch('/api/despacho/save-sheet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(nuevo),
-    })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.ok) showNotification(`📋 Conduce registrado en Google Sheets (${d.rows} filas).`);
-        else showNotification(`⚠️ Sheets: ${d.error || 'No se pudo guardar.'}`, 'error');
-      })
-      .catch(() => showNotification('⚠️ No se pudo conectar con Google Sheets.', 'error'));
+    // ── Guardar conduce en Supabase (bloqueante para evitar correlativos duplicados)
+    try {
+      const saveRes = await fetch('/api/despacho/save-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nuevo),
+      });
+      const saveData = await saveRes.json();
+
+      if (!saveRes.ok || !saveData?.ok) {
+        if (saveRes.status === 409) {
+          await loadConducesFromServer(1);
+          showNotification(`⚠️ ${saveData?.error || 'No. Conduce duplicado.'} Se asignó el siguiente correlativo automático.`, 'error');
+          setIsSaving(false);
+          return;
+        }
+        showNotification(`⚠️ ${saveData?.error || 'No se pudo guardar el conduce.'}`, 'error');
+        setIsSaving(false);
+        return;
+      }
+
+      setConduces((prev) => [nuevo, ...prev]);
+      setSelectedConduce(nuevo);
+      showNotification(`📋 Conduce registrado en Supabase (${saveData.rows} filas).`);
+      await loadConducesFromServer(1);
+    } catch {
+      showNotification('⚠️ No se pudo conectar con Supabase.', 'error');
+      setIsSaving(false);
+      return;
+    }
 
     // ── Actualizar a ENTREGADO en Orderry solo las órdenes del grupo Entrega
     const paraActualizar = unidadesDespachadas
@@ -639,7 +808,13 @@ export default function DespachoPagina() {
           showNotification(`✅ ${data.updated.length} orden(es) marcadas como "${data.statusUsed}" en Orderry.`);
         }
         if (data.failed?.length > 0) {
-          showNotification(`⚠️ ${data.failed.length} orden(es) no pudieron actualizarse en Orderry.`, 'error');
+          const firstFail = data.failed[0];
+          const detail = typeof firstFail?.error === 'string' ? firstFail.error : '';
+          const compact = detail.length > 140 ? `${detail.slice(0, 140)}...` : detail;
+          showNotification(
+            `⚠️ ${data.failed.length} orden(es) no pudieron actualizarse en Orderry.${firstFail?.id ? ` Ejemplo ID ${firstFail.id}: ${compact || 'sin detalle'}` : ''}`,
+            'error',
+          );
         }
         if (data.error) {
           showNotification(`⚠️ Orderry: ${data.error}`, 'error');
@@ -648,22 +823,10 @@ export default function DespachoPagina() {
         showNotification(`⚠️ Error de red al actualizar Orderry: ${err.message}`, 'error');
       }
     } else {
-      showNotification(`Conduce ${conduceNum} guardado.`);
+      showNotification(`Conduce ${normalizedConduceNum} guardado.`);
     }
 
-    // Reset — calcular siguiente número preservando el máximo histórico
-    setConduceNum((prev) => {
-      try {
-        const s = localStorage.getItem('dispatch_conduces_v4');
-        const list: Conduce[] = s ? JSON.parse(s) : [];
-        const nums = list.map((c) => parseInt(c.id.replace(/\D/g, ''), 10)).filter((n) => !isNaN(n));
-        const lastSaved = parseInt(localStorage.getItem('dispatch_last_conduce_num') ?? '0', 10);
-        const current = parseInt(prev.replace(/\D/g, ''), 10);
-        const next = Math.max(nums.length > 0 ? Math.max(...nums) : 0, lastSaved, current) + 1;
-        localStorage.setItem('dispatch_last_conduce_num', String(next - 1));
-        return `TCSAL-${String(next).padStart(4, '0')}`;
-      } catch { return prev; }
-    });
+    // Reset
     setDoa(false); setCourrier('--CURRIER--'); setNumeroGuia(''); setPrecinto('');
     setOrigen('--ORIGEN--'); setOperador('--OPERADOR--'); setRetail('--RETAIL--');
     setDealer(''); setSucursal('');
@@ -672,7 +835,27 @@ export default function DespachoPagina() {
     setIsSaving(false);
   };
 
+  const filteredConduces = conduces.filter((c) => {
+    const dispatcher = String(c.despachadoPor || '').trim() || dispatchUserName;
+    const s = searchTerm.toLowerCase();
+    return c.id.toLowerCase().includes(s)
+      || dispatcher.toLowerCase().includes(s)
+      || c.courrier.toLowerCase().includes(s)
+      || c.numeroGuia.toLowerCase().includes(s)
+      || c.dealer.toLowerCase().includes(s)
+      || c.unidadesDespachadas.some((u) => u.imei.toLowerCase().includes(s));
+  });
+  const totalHistoryPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
+
   // ─── RENDER ───────────────────────────────────────────────────────────────
+  if (!authChecked) {
+    return <div className="min-h-screen bg-slate-100 text-slate-600 flex items-center justify-center text-sm">Validando sesión…</div>;
+  }
+
+  if (authChecked && !authAllowed) {
+    return <div className="min-h-screen bg-slate-100 text-slate-600 flex items-center justify-center text-sm">Redirigiendo a login…</div>;
+  }
+
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 font-sans flex flex-col">
 
@@ -693,10 +876,10 @@ export default function DespachoPagina() {
             onClick={handleSyncAgencies}
             disabled={syncingAgencies}
             className="flex items-center space-x-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-xs text-white px-3 py-1.5 rounded-md border border-emerald-600 transition"
-            title="Exportar listado de agencias de Orderry a Google Sheets"
+            title="Exportar listado de agencias de Orderry a Supabase"
           >
             <FileText className="w-3.5 h-3.5" />
-            <span>{syncingAgencies ? 'Sincronizando…' : 'Sync Agencias → Sheets'}</span>
+            <span>{syncingAgencies ? 'Sincronizando…' : 'Sync Agencias → Supabase'}</span>
           </button>
           <button onClick={() => setShowApiSettings(!showApiSettings)} className="flex items-center space-x-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 px-3 py-1.5 rounded-md border border-slate-700 transition">
             <Settings className="w-3.5 h-3.5 text-emerald-400" /><span>API Key</span>
@@ -726,7 +909,7 @@ export default function DespachoPagina() {
           <button key={tab} onClick={() => setActiveTab(tab)}
             className={`flex items-center px-6 py-4 border-b-2 font-semibold text-sm transition-colors whitespace-nowrap ${activeTab === tab ? 'border-[#001e6c] text-[#001e6c] bg-slate-50' : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'}`}
           >
-            {tab === 'despacho' ? <><Barcode className="w-4 h-4 mr-2" />Ventana de Despacho &amp; Pistoleo</> : <><FileText className="w-4 h-4 mr-2" />Historial &amp; Correlativos TCSAL<span className="ml-2 bg-slate-200 text-slate-800 text-xs px-2 py-0.5 rounded-full font-bold">{conduces.length}</span></>}
+            {tab === 'despacho' ? <><Barcode className="w-4 h-4 mr-2" />Ventana de Despacho &amp; Pistoleo</> : <><FileText className="w-4 h-4 mr-2" />Historial &amp; Correlativos TCSAL<span className="ml-2 bg-slate-200 text-slate-800 text-xs px-2 py-0.5 rounded-full font-bold">{historyTotal}</span></>}
           </button>
         ))}
       </div>
@@ -759,7 +942,8 @@ export default function DespachoPagina() {
                   <div className="flex items-end justify-between gap-4">
                     <div className="flex-1">
                       <label className="block text-[11px] font-bold text-slate-600 mb-1">No. Conduce</label>
-                      <input type="text" value={conduceNum} onChange={(e) => setConduceNum(e.target.value)} className="w-full p-2 bg-slate-50 border border-slate-300 rounded text-xs font-bold font-mono focus:outline-none focus:ring-1 focus:ring-[#001e6c]" />
+                      <input type="text" value={conduceNum} readOnly title="Autogenerado por el sistema" className="w-full p-2 bg-slate-100 border border-slate-300 rounded text-xs font-bold font-mono text-slate-700 cursor-not-allowed" />
+                      <p className="mt-1 text-[10px] text-slate-500">Autogenerado por sistema. No editable para evitar duplicados.</p>
                     </div>
                     <div className="flex items-center pb-2">
                       <input type="checkbox" id="doa-cb" checked={doa} onChange={(e) => setDoa(e.target.checked)} className="h-4 w-4 rounded" />
@@ -1015,20 +1199,23 @@ export default function DespachoPagina() {
               </div>
               <div className="relative w-full md:w-80">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                <input type="text" placeholder="Buscar IMEI, Conduce, Destinatario…" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-[#001e6c]" />
+                <input type="text" placeholder="Buscar IMEI, Conduce, Destinatario o Despachado por…" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-[#001e6c]" />
               </div>
             </div>
-            {conduces.length === 0 ? (
+            {historyTotal === 0 ? (
               <div className="p-12 text-center text-slate-400"><p className="text-sm">No hay conduces registrados.</p></div>
+            ) : filteredConduces.length === 0 ? (
+              <div className="p-12 text-center text-slate-400"><p className="text-sm">No hay resultados para la búsqueda en esta página.</p></div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
-                  <thead><tr className="bg-slate-100 text-slate-600 font-bold border-b"><th className="p-3 border">No. Conduce</th><th className="p-3 border">Fecha / Hora</th><th className="p-3 border">Tipo Destino</th><th className="p-3 border">Guía / Courier</th><th className="p-3 border">Precinto</th><th className="p-3 border text-center">Unidades</th><th className="p-3 border text-center">Acciones</th></tr></thead>
+                  <thead><tr className="bg-slate-100 text-slate-600 font-bold border-b"><th className="p-3 border">No. Conduce</th><th className="p-3 border">Fecha / Hora</th><th className="p-3 border">Despachado por</th><th className="p-3 border">Tipo Destino</th><th className="p-3 border">Guía / Courier</th><th className="p-3 border">Precinto</th><th className="p-3 border text-center">Unidades</th><th className="p-3 border text-center">Acciones</th></tr></thead>
                   <tbody className="divide-y divide-slate-200">
-                    {conduces.filter((c) => { const s = searchTerm.toLowerCase(); return c.id.toLowerCase().includes(s) || c.courrier.toLowerCase().includes(s) || c.numeroGuia.toLowerCase().includes(s) || c.dealer.toLowerCase().includes(s) || c.unidadesDespachadas.some((u) => u.imei.includes(s)); }).map((cond) => (
+                    {filteredConduces.map((cond) => (
                       <tr key={cond.id} className="hover:bg-slate-50">
                         <td className="p-3 border font-bold font-mono text-[#001e6c]">{cond.id}</td>
-                        <td className="p-3 border whitespace-nowrap"><div className="font-semibold text-slate-700">{cond.fecha ? cond.fecha.split(' ')[0] : '—'}</div><div className="text-[10px] font-mono text-slate-500">{cond.fecha ? cond.fecha.split(' ').slice(1).join(' ') : ''}</div></td>
+                        <td className="p-3 border whitespace-nowrap"><div className="font-semibold text-slate-700">{formatHistoryDateTime(cond.fecha).date}</div><div className="text-[10px] font-mono text-slate-500">{formatHistoryDateTime(cond.fecha).time}</div></td>
+                        <td className="p-3 border"><div className="font-semibold text-slate-800">{(String(cond.despachadoPor || '').trim() || dispatchUserName || 'Sin dato')}</div></td>
                         <td className="p-3 border"><div className="font-bold text-slate-800">{cond.operador !== '--OPERADOR--' ? cond.operador : cond.retail !== '--RETAIL--' ? cond.retail : cond.origen}</div><div className="text-[10px] text-slate-500">{cond.dealer} • {cond.sucursal}</div></td>
                         <td className="p-3 border"><span className="font-semibold text-slate-700">{cond.courrier}</span><div className="text-[10px] font-mono text-slate-500">Guía: {cond.numeroGuia || 'N/A'}</div></td>
                         <td className="p-3 border font-mono font-bold text-slate-600">{cond.precinto || 'Sin Precinto'}</td>
@@ -1036,7 +1223,9 @@ export default function DespachoPagina() {
                         <td className="p-3 border text-center">
                           <div className="flex justify-center space-x-2">
                             <button onClick={() => setSelectedConduce(cond)} className="bg-[#001e6c] hover:bg-[#00155a] text-white px-2.5 py-1.5 rounded font-bold text-[10px] flex items-center transition"><Printer className="w-3.5 h-3.5 mr-1 text-amber-400" />Vista Ficha</button>
-                            <button onClick={async () => { if (!confirm('¿Eliminar este Conduce? También se eliminará de Google Sheets.')) return; setConduces((p) => p.filter((c) => c.id !== cond.id)); showNotification('Conduce removido.', 'info'); try { const r = await fetch('/api/despacho/save-sheet', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: cond.id }) }); const d = await r.json(); if (d.ok) showNotification(`🗑️ Eliminado de Google Sheets (${d.deleted} filas).`); else showNotification(`⚠️ Sheets: ${d.error || 'No se pudo eliminar.'}`, 'error'); } catch { showNotification('⚠️ No se pudo conectar con Google Sheets.', 'error'); } }} className="text-red-600 hover:text-red-900 font-bold px-1.5 py-1"><Trash2 className="w-4 h-4" /></button>
+                            {authRole === 'admin' && (
+                              <button onClick={async () => { if (!confirm('¿Eliminar este Conduce? También se eliminará de Supabase.')) return; try { const r = await fetch('/api/despacho/save-sheet', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: cond.id }) }); const d = await r.json(); if (d.ok) { showNotification(`🗑️ Eliminado de Supabase (${d.deleted} filas).`); await loadConducesFromServer(historyPage); } else showNotification(`⚠️ Supabase: ${d.error || 'No se pudo eliminar.'}`, 'error'); } catch { showNotification('⚠️ No se pudo conectar con Supabase.', 'error'); } }} className="text-red-600 hover:text-red-900 font-bold px-1.5 py-1"><Trash2 className="w-4 h-4" /></button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1045,6 +1234,26 @@ export default function DespachoPagina() {
                 </table>
               </div>
             )}
+            {historyTotal > 0 && (
+              <div className="px-6 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3 text-xs">
+                <span className="text-slate-600">Página {historyPage} de {totalHistoryPages} • {historyTotal} conduces</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => loadConducesFromServer(historyPage - 1)}
+                    disabled={historyLoading || historyPage <= 1}
+                    className="px-3 py-1 rounded border border-slate-300 bg-white text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >Anterior</button>
+                  <button
+                    type="button"
+                    onClick={() => loadConducesFromServer(historyPage + 1)}
+                    disabled={historyLoading || historyPage >= totalHistoryPages}
+                    className="px-3 py-1 rounded border border-slate-300 bg-white text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >Siguiente</button>
+                </div>
+              </div>
+            )}
+            {historyLoading && <div className="px-6 py-3 text-xs text-slate-500 border-t border-slate-200">Sincronizando historial desde Supabase…</div>}
           </div>
         )}
       </main>
@@ -1138,10 +1347,34 @@ export default function DespachoPagina() {
               <div className="flex justify-between items-start border-b-2 border-slate-900 pb-6 mb-6">
                 <div>
                   <h1 className="text-xl font-black text-slate-900 tracking-tight">CONDUCE DE DESPACHO DE EQUIPOS</h1>
+                  <div className="mt-3">
+                    <svg
+                      viewBox="0 0 565 280"
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-10 w-auto"
+                      aria-label="Logo TC"
+                      role="img"
+                    >
+                      <rect width="565" height="280" fill="#ffffff" />
+
+                      <g fill="#2e3165">
+                        <rect x="8" y="9" width="232" height="60" />
+                        <rect x="92" y="9" width="65" height="271" />
+                      </g>
+
+                      <g fill="#2e3165">
+                        <circle cx="425" cy="140" r="140" />
+                        <circle cx="425" cy="140" r="85" fill="#ffffff" />
+                        <rect x="500" y="100" width="80" height="60" fill="#ffffff" />
+                        <circle cx="425" cy="140" r="35" fill="#2e3165" />
+                      </g>
+                    </svg>
+                  </div>
                 </div>
                 <div className="text-right">
                   <div className="bg-slate-100 border-2 border-slate-900 rounded p-2 inline-block"><p className="text-[9px] font-bold text-slate-600">NÚMERO CORRELATIVO</p><p className="text-base font-black font-mono text-emerald-700">{selectedConduce.id}</p></div>
-                  <p className="text-[10px] text-slate-500 mt-2">Fecha / Hora: <strong className="text-slate-800">{selectedConduce.fecha}</strong></p>
+                  <p className="text-[10px] text-slate-500 mt-2">Fecha / Hora: <strong className="text-slate-800">{formatHistoryDateTime(selectedConduce.fecha).date} {formatHistoryDateTime(selectedConduce.fecha).time}</strong></p>
+                  <p className="text-[10px] text-slate-500">Despachado por: <strong className="text-slate-800">{String(selectedConduce.despachadoPor || '').trim() || dispatchUserName || 'Sin dato'}</strong></p>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded border border-slate-200 mb-6 text-xs">

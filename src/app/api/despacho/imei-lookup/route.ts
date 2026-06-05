@@ -3,6 +3,19 @@ import { NextRequest, NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const IMEI_LOOKUP_TIMEOUT_MS = Number(process.env.ORDERRY_IMEI_LOOKUP_TIMEOUT_MS || '12000');
+const IMEI_LOOKUP_MAX_PAGES = Number(process.env.ORDERRY_IMEI_LOOKUP_MAX_PAGES || '12');
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMEI_LOOKUP_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Known brands — order matters (longer / more specific first) */
 const KNOWN_BRANDS = [
   'Apple', 'Samsung', 'Xiaomi', 'Motorola', 'Huawei', 'Honor',
@@ -38,6 +51,13 @@ function mapStatus(statusName: string): string {
 }
 
 /** Extrae todos los valores posibles de IMEI/serial de una orden Orderry */
+function normalizeIdentifier(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
 function imeiCandidates(o: Record<string, any>): string[] {
   const raw = [
     o?.asset?.uid,
@@ -50,8 +70,8 @@ function imeiCandidates(o: Record<string, any>): string[] {
     ...Object.values(o?.custom_fields ?? {}),
   ];
   return raw
-    .map((v) => String(v ?? '').replace(/[\s\-]/g, ''))
-    .filter((v) => v.length >= 8);
+    .map((v) => normalizeIdentifier(v))
+    .filter((v) => v.length >= 4 && /\d/.test(v));
 }
 
 /** Busca en Orderry con un parámetro de query y devuelve el array de órdenes */
@@ -60,15 +80,19 @@ async function fetchOrders(
   apiKey: string,
   params: Record<string, string>,
 ): Promise<Record<string, any>[]> {
-  const qs = new URLSearchParams(params);
-  const res = await fetch(`${baseUrl}/v2/orders?${qs.toString()}`, {
-    method: 'GET',
-    cache: 'no-store',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-  });
-  if (!res.ok) return [];
-  const body = await res.json();
-  return Array.isArray(body?.data) ? body.data : [];
+  try {
+    const qs = new URLSearchParams(params);
+    const res = await fetchWithTimeout(`${baseUrl}/v2/orders?${qs.toString()}`, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) return [];
+    const body = await res.json();
+    return Array.isArray(body?.data) ? body.data : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Busca en todas las páginas de Orderry buscando un IMEI específico */
@@ -83,18 +107,22 @@ async function findOrderByImeiAllPages(
   let totalPages = 1;
 
   do {
-    const qs = new URLSearchParams({ limit: String(limit), page: String(page) });
-    const res = await fetch(`${baseUrl}/v2/orders?${qs.toString()}`, {
-      method: 'GET', cache: 'no-store', headers,
-    });
-    if (!res.ok) break;
-    const body = await res.json();
-    const orders: Record<string, any>[] = Array.isArray(body?.data) ? body.data : [];
-    const found = orders.find((o) => imeiCandidates(o).includes(normalizedImei));
-    if (found) return found;
-    totalPages = Number(body?.paging?.total_pages ?? 1);
-    page += 1;
-  } while (page <= totalPages);
+    try {
+      const qs = new URLSearchParams({ limit: String(limit), page: String(page) });
+      const res = await fetchWithTimeout(`${baseUrl}/v2/orders?${qs.toString()}`, {
+        method: 'GET', cache: 'no-store', headers,
+      });
+      if (!res.ok) break;
+      const body = await res.json();
+      const orders: Record<string, any>[] = Array.isArray(body?.data) ? body.data : [];
+      const found = orders.find((o) => imeiCandidates(o).includes(normalizedImei));
+      if (found) return found;
+      totalPages = Number(body?.paging?.total_pages ?? 1);
+      page += 1;
+    } catch {
+      break;
+    }
+  } while (page <= totalPages && page <= IMEI_LOOKUP_MAX_PAGES);
 
   return undefined;
 }
@@ -111,10 +139,10 @@ export async function GET(request: NextRequest) {
   const baseUrl = process.env.ORDERRY_API_URL || 'https://api.orderry.com';
 
   if (!apiKey) {
-    return NextResponse.json({ error: 'API key no configurada' }, { status: 500 });
+    return NextResponse.json({ error: 'API key de Orderry no configurada', found: false }, { status: 500 });
   }
 
-  const normalizedImei = imei.replace(/[\s\-]/g, '');
+  const normalizedImei = normalizeIdentifier(imei);
   const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
 
   try {
@@ -122,11 +150,15 @@ export async function GET(request: NextRequest) {
 
     // ── Paso 1a: Si tenemos orderId, consultar directo por ID (más rápido y fiable)
     if (orderIdParam) {
-      const directRes = await fetch(`${baseUrl}/v2/orders/${orderIdParam}`, {
-        method: 'GET', cache: 'no-store', headers,
-      });
-      if (directRes.ok) {
-        match = await directRes.json();
+      try {
+        const directRes = await fetchWithTimeout(`${baseUrl}/v2/orders/${orderIdParam}`, {
+          method: 'GET', cache: 'no-store', headers,
+        });
+        if (directRes.ok) {
+          match = await directRes.json();
+        }
+      } catch {
+        // continuar con búsqueda por IMEI
       }
     }
 
@@ -288,6 +320,7 @@ export async function GET(request: NextRequest) {
       // _raw: match,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message, found: false }, { status: 500 });
+    const detail = String(err?.message || 'Fallo interno en búsqueda de IMEI');
+    return NextResponse.json({ error: `Orderry no disponible temporalmente. ${detail}`, found: false }, { status: 502 });
   }
 }
