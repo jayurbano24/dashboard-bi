@@ -782,6 +782,36 @@ const extractTechnicianFromOrder = (order: Record<string, any>) => {
   const assigneeId = String(order?.assignee_id || '').trim();
   if (assigneeId && EXECUTOR_ALIASES[assigneeId]) return EXECUTOR_ALIASES[assigneeId];
 
+  // Try to find technician inside services/works/jobs (Orderry sometimes assigns tech per service)
+  const serviceCollections = [order?.services, order?.works, order?.jobs];
+  for (const collection of serviceCollections) {
+    if (Array.isArray(collection)) {
+      for (const item of collection) {
+        const itemTech = item?.engineer?.name || item?.executor?.name || item?.assignee?.name || item?.technician?.name || item?.engineer_name;
+        if (typeof itemTech === 'string' && itemTech.trim()) {
+           return itemTech.trim();
+        }
+        const itemId = String(item?.engineer_id || item?.executor_id || item?.assignee_id || '').trim();
+        if (itemId && EXECUTOR_ALIASES[itemId]) {
+           return EXECUTOR_ALIASES[itemId];
+        }
+      }
+    }
+  }
+
+  // Look in custom fields for known technician IDs or exact names
+  if (order?.custom_fields && typeof order.custom_fields === 'object') {
+    const knownNames = Object.values(EXECUTOR_ALIASES).map(n => n.toUpperCase());
+    for (const val of Object.values(order.custom_fields)) {
+      const strVal = String(val).trim();
+      if (strVal && EXECUTOR_ALIASES[strVal]) return EXECUTOR_ALIASES[strVal];
+      if (typeof val === 'string' && knownNames.includes(val.trim().toUpperCase())) {
+        // Return original case name
+        return Object.values(EXECUTOR_ALIASES).find(n => n.toUpperCase() === val.trim().toUpperCase()) || val.trim();
+      }
+    }
+  }
+
   return 'Sin asignar';
 };
 
@@ -2591,23 +2621,41 @@ export default function DashboardMultimodular() {
       .filter((item) => item.series && !Number.isNaN(item.createdAt.getTime()))
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
-    const lastSeenBySeries = new Map<string, Date>();
     const bounceByOrderKey = new Map<string, { reentryDays: number | null; within30: boolean; within60: boolean; within90: boolean }>();
 
+    const seriesGroups = new Map<string, Array<{ key: string; createdAt: Date }>>();
     historyUniverse.forEach((item) => {
-      const previousDate = lastSeenBySeries.get(item.series as string);
-      const reentryDays = previousDate
-        ? (item.createdAt.getTime() - previousDate.getTime()) / (1000 * 60 * 60 * 24)
-        : null;
+      const seriesStr = item.series as string;
+      if (!seriesGroups.has(seriesStr)) {
+        seriesGroups.set(seriesStr, []);
+      }
+      seriesGroups.get(seriesStr)!.push(item);
+    });
 
-      bounceByOrderKey.set(item.key, {
-        reentryDays,
-        within30: reentryDays !== null && reentryDays <= 30,
-        within60: reentryDays !== null && reentryDays <= 60,
-        within90: reentryDays !== null && reentryDays <= 90,
-      });
+    seriesGroups.forEach((orders) => {
+      for (let i = 0; i < orders.length; i++) {
+        let reentryDays: number | null = null;
+        let within30 = false;
+        let within60 = false;
+        let within90 = false;
 
-      lastSeenBySeries.set(item.series as string, item.createdAt);
+        if (i < orders.length - 1) {
+          const currentOrder = orders[i];
+          const nextOrder = orders[i + 1];
+          reentryDays = (nextOrder.createdAt.getTime() - currentOrder.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+          
+          if (reentryDays <= 30) within30 = true;
+          if (reentryDays <= 60) within60 = true;
+          if (reentryDays <= 90) within90 = true;
+        }
+
+        bounceByOrderKey.set(orders[i].key, {
+          reentryDays,
+          within30,
+          within60,
+          within90,
+        });
+      }
     });
 
     const visibleOrders = bounceCohortOrders
@@ -3460,21 +3508,35 @@ export default function DashboardMultimodular() {
       .filter((item) => item.series && !Number.isNaN(item.createdAt.getTime()))
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
-    const lastSeenBySeries = new Map<string, Date>();
-    const bounceByOrderKey = new Map<string, { reentryDays: number | null; within30: boolean }>();
+    const bounceByOrderKey = new Map<string, { reentryDays: number | null; within60: boolean }>();
 
+    const seriesGroups = new Map<string, Array<{ key: string; createdAt: Date }>>();
     historyUniverse.forEach((item) => {
-      const previousDate = lastSeenBySeries.get(item.series as string);
-      const reentryDays = previousDate
-        ? (item.createdAt.getTime() - previousDate.getTime()) / (1000 * 60 * 60 * 24)
-        : null;
+      const seriesStr = item.series as string;
+      if (!seriesGroups.has(seriesStr)) {
+        seriesGroups.set(seriesStr, []);
+      }
+      seriesGroups.get(seriesStr)!.push(item);
+    });
 
-      bounceByOrderKey.set(item.key, {
-        reentryDays,
-        within30: reentryDays !== null && reentryDays <= 30,
-      });
+    seriesGroups.forEach((orders) => {
+      for (let i = 0; i < orders.length; i++) {
+        let reentryDays: number | null = null;
+        let within60 = false;
 
-      lastSeenBySeries.set(item.series as string, item.createdAt);
+        if (i < orders.length - 1) {
+          const currentOrder = orders[i];
+          const nextOrder = orders[i + 1];
+          reentryDays = (nextOrder.createdAt.getTime() - currentOrder.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+          
+          if (reentryDays <= 60) within60 = true;
+        }
+
+        bounceByOrderKey.set(orders[i].key, {
+          reentryDays,
+          within60,
+        });
+      }
     });
 
     return bounceByOrderKey;
@@ -3487,7 +3549,7 @@ export default function DashboardMultimodular() {
         const statusName = normalizeText(order?.status?.name);
 
         if (!acc[name]) {
-          acc[name] = { name, os: 0, repairs: 0, qc: 0, hours: 0, ftf: 0, dispatches: 0, firstPass: 0, reentries30: 0, closure: 0 };
+          acc[name] = { name, os: 0, repairs: 0, qc: 0, hours: 0, ftf: 0, dispatches: 0, firstPass: 0, reentries60: 0, closure: 0 };
         }
 
         acc[name].os += 1;
@@ -3499,18 +3561,19 @@ export default function DashboardMultimodular() {
         if (isDispatchStatus(order)) {
           acc[name].dispatches += 1;
           const bounceInfo = technicianReentryByOrderKey.get(getOrderTrackingKey(order));
-          if (bounceInfo?.within30) acc[name].reentries30 += 1;
+          if (bounceInfo?.within60) acc[name].reentries60 += 1;
           else acc[name].firstPass += 1;
         }
         return acc;
-      }, {} as Record<string, { name: string; os: number; repairs: number; qc: number; hours: number; ftf: number; dispatches: number; firstPass: number; reentries30: number; closure: number }>);
+      }, {} as Record<string, { name: string; os: number; repairs: number; qc: number; hours: number; ftf: number; dispatches: number; firstPass: number; reentries60: number; closure: number }>);
 
       return Object.values(grouped)
+        .filter((item) => item.name !== 'Sin asignar')
         .map((item) => ({
           ...item,
           hours: Number((item.hours / Math.max(item.os, 1)).toFixed(1)),
           ftf: item.dispatches ? Math.round((item.firstPass / item.dispatches) * 100) : 0,
-          reentries30: item.dispatches ? Math.round((item.reentries30 / item.dispatches) * 100) : 0,
+          reentries60: item.dispatches ? Math.round((item.reentries60 / item.dispatches) * 100) : 0,
           closure: item.os ? Math.round((item.dispatches / item.os) * 100) : 0,
         }))
         .sort((a, b) => (b.repairs + b.qc) - (a.repairs + a.qc))
@@ -3533,8 +3596,8 @@ export default function DashboardMultimodular() {
     const totalOs = technicianRankingData.reduce((sum, item) => sum + item.os, 0);
     const totalRepairs = technicianRankingData.reduce((sum, item) => sum + item.repairs, 0);
     const totalDispatches = technicianRankingData.reduce((sum, item) => sum + item.dispatches, 0);
-    const totalReentries30 = technicianRankingData.reduce((sum, item) => sum + (item.reentries30 || 0), 0);
-    const totalFirstPass = Math.max(totalDispatches - totalReentries30, 0);
+    const totalReentries60 = technicianRankingData.reduce((sum, item) => sum + (item.reentries60 || 0), 0);
+    const totalFirstPass = Math.max(totalDispatches - totalReentries60, 0);
     const weightedHours = technicianRankingData.reduce((sum, item) => sum + item.hours * item.os, 0);
     const weightedFtf = technicianRankingData.reduce((sum, item) => sum + item.ftf * item.os, 0);
     const avgHours = totalOs ? weightedHours / totalOs : 0;
@@ -3549,7 +3612,7 @@ export default function DashboardMultimodular() {
       productivity: technicianRankingData.length ? (totalRepairs / technicianRankingData.length).toFixed(1) : '0.0',
       productivityDaily: `${(totalRepairs / activeDays).toFixed(1)} eq/día`,
       ftf: `${totalDispatches ? Math.round((totalFirstPass / totalDispatches) * 100) : 0}%`,
-      reentry30: `${totalDispatches ? Math.round((totalReentries30 / totalDispatches) * 100) : 0}%`,
+      reentry60: `${totalDispatches ? Math.round((totalReentries60 / totalDispatches) * 100) : 0}%`,
       closure: `${totalOs ? Math.round((totalDispatches / totalOs) * 100) : 0}%`,
       delivered: totalDispatches,
       wip,
@@ -3599,8 +3662,8 @@ export default function DashboardMultimodular() {
       const controlesQc = stageCounts['Controles_QC'];
       const cerrada = closedOrders.length;
       const wip = Math.max(relatedOrders.length - diagnosticos - reparaciones - noReparado - controlesQc - cerrada, 0);
-      const reentries30 = closedOrders.filter((order) => technicianReentryByOrderKey.get(getOrderTrackingKey(order))?.within30).length;
-      const ftf30 = cerrada ? Math.max(0, Math.round(((cerrada - reentries30) / cerrada) * 100)) : 0;
+      const reentries60 = closedOrders.filter((order) => technicianReentryByOrderKey.get(getOrderTrackingKey(order))?.within60).length;
+      const ftf60 = cerrada ? Math.max(0, Math.round(((cerrada - reentries60) / cerrada) * 100)) : 0;
       const closurePct = relatedOrders.length ? Math.round((cerrada / relatedOrders.length) * 100) : 0;
       const slaMet = relatedOrders.filter((order) => isOrderWithinSla(order)).length;
       const creatorOwner = Object.entries(
@@ -3628,8 +3691,8 @@ export default function DashboardMultimodular() {
         controlesQc,
         wip,
         closurePct: `${closurePct}%`,
-        ftf30: `${ftf30}%`,
-        reentry30: `${cerrada ? Math.round((reentries30 / cerrada) * 100) : 0}%`,
+        ftf60: `${ftf60}%`,
+        reentry60: `${cerrada ? Math.round((reentries60 / cerrada) * 100) : 0}%`,
         sla,
         cerrada,
         creatorOwner,
@@ -4120,14 +4183,19 @@ export default function DashboardMultimodular() {
   }, [ordersWithinSla, ordersOutsideSla]);
 
   const tatByTechnicianCards = useMemo(() => {
-    return technicianRankingData.slice(0, 4).map((item) => ({
-      name: item.name,
-      tat: `${(item.hours / 24).toFixed(1)} días`,
-      closed: item.dispatches,
-      closure: item.closure,
-      sla: item.ftf,
-    }));
-  }, [technicianRankingData]);
+    return technicianRankingData.slice(0, 4).map((item) => {
+      const isUnassigned = item.name === 'Sin asignar';
+      const relatedOrders = isUnassigned ? filteredOrders.filter((order) => extractTechnicianFromOrder(order) === item.name) : [];
+      return {
+        name: item.name,
+        tat: `${(item.hours / 24).toFixed(1)} días`,
+        closed: item.dispatches,
+        closure: item.closure,
+        sla: item.ftf,
+        unassignedDetails: isUnassigned ? relatedOrders.map(o => String(o.number || o.id)).filter(Boolean) : undefined,
+      };
+    });
+  }, [technicianRankingData, filteredOrders]);
 
   const getFtfVisualLevel = (ftf: number) => {
     if (ftf > 90) {
@@ -4627,16 +4695,67 @@ export default function DashboardMultimodular() {
     };
   }, [hasLiveData, filteredOrders, selectedQcFromDate, selectedQcToDate]);
 
+  const isPendienteOrder = (order: Record<string, any>) => {
+    const status = normalizeText(order?.status?.name || '');
+    return [
+      'ESPERANDO APROBACION',
+      'SWAPS PCBA',
+      'SWAPS-PCBA',
+      'ESCALADA PARA NC',
+      'PRESUPUESTO RECHAZADO',
+      'ESPERANDO PARTES',
+      'ESCALADO LIFE ONE',
+      'ESCALADO LIFE-ONE'
+    ].some(marker => status.includes(normalizeText(marker)));
+  };
+
   const technicianProductivitySlaData = useMemo(() => {
     return technicianRankingData.slice(0, 8).map((item) => {
       const relatedOrders = filteredOrders.filter((order) => extractTechnicianFromOrder(order) === item.name);
       const outSla7 = relatedOrders.filter((order) => getOrderProcessingDays(order) > 7).length;
+      
+      let enReparacionCount = 0;
+      let pendienteCount = 0;
+      let cerradasCount = 0;
+      let nuevoCount = 0;
+
+      relatedOrders.forEach((order) => {
+        const status = normalizeText(order?.status?.name || '');
+        
+        const isCerrada = [
+          'PARA DEVOLVER CAMBIO AGENCIA', 'ENTREGADO/LIFE-ONE', 'ENTREGADO-NOTA DE CREDITO', 
+          'NOTA DE CREDITO VALIDACION SAP', 'ARCHIVADO', 'PARA DEVOLVER CAC', 
+          'PARA DEVOLVER/LIFE-ONE', 'BODEGA CLARO G945/G935'
+        ].some(marker => status.includes(normalizeText(marker))) || isDispatchStatus(order);
+
+        const isPendiente = isPendienteOrder(order);
+
+        const isReparacion = [
+          'REPARADO', 'CONTROL DE CALIDAD', 'N.C. EN CONTROL DE CALIDAD', 
+          'VALIDACION DOA', 'VALIDACION DAP', 'APROBACION RECHAZADO'
+        ].some(marker => status.includes(normalizeText(marker))) || 
+        isTechnicianRepairCompletedStatus(order?.status?.name || '') || 
+        isQaStatus(order?.status?.name || '');
+
+        if (isCerrada) {
+          cerradasCount++;
+        } else if (isPendiente) {
+          pendienteCount++;
+        } else if (isReparacion) {
+          enReparacionCount++;
+        } else {
+          // Cualquier estado no mapeado explícitamente a las 3 categorías anteriores cae en Nuevo / En espera
+          nuevoCount++;
+        }
+      });
 
       return {
         name: item.name,
-        Asignadas: item.os,
-        'En reparación': item.repairs + item.qc,
-        Cerradas: item.dispatches,
+        Asignadas: relatedOrders.length,
+        'Nuevo / En espera': nuevoCount,
+        'En reparación': enReparacionCount,
+        Pendiente: pendienteCount,
+        Cerradas: cerradasCount,
         'Fuera SLA': outSla7,
       };
     });
@@ -6033,6 +6152,16 @@ export default function DashboardMultimodular() {
                         <Text className="text-xs font-semibold text-slate-500 uppercase">{item.name}</Text>
                         <Metric className={`mt-1 text-xl ${ftfLevel.textClass}`}>{item.tat}</Metric>
                         <Text className="text-xs text-slate-600">{item.closed} cerradas · {item.closure}% cierre · <span className={`font-bold ${ftfLevel.textClass}`}>{item.sla}% FTF</span> · {ftfLevel.label}</Text>
+                        {item.unassignedDetails && item.unassignedDetails.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-slate-200/50 text-xs text-slate-500 overflow-y-auto max-h-32 custom-scrollbar">
+                            <strong className="text-slate-600 block mb-1">Órdenes sin asignar:</strong>
+                            <ul className="list-disc pl-4 space-y-0.5">
+                              {item.unassignedDetails.map((orderNum: string, idx: number) => (
+                                <li key={idx} className="truncate">{orderNum}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -6077,8 +6206,8 @@ export default function DashboardMultimodular() {
                   className="mt-6 h-80"
                   data={technicianProductivitySlaData}
                   index="name"
-                  categories={["Asignadas", "En reparación", "Cerradas", "Fuera SLA"]}
-                  colors={["slate", "blue", "emerald", "rose"]}
+                  categories={["Asignadas", "Nuevo / En espera", "En reparación", "Pendiente", "Cerradas", "Fuera SLA"]}
+                  colors={["slate", "gray", "blue", "amber", "emerald", "rose"]}
                   layout="vertical"
                   yAxisWidth={110}
                 />
@@ -6585,7 +6714,7 @@ export default function DashboardMultimodular() {
                 <Text className="mt-2 text-xs text-slate-500">Equipos reparados por día</Text>
               </Card>
               <Card>
-                <Text className="text-slate-500">First Time Fix (FTF 30D)</Text>
+                <Text className="text-slate-500">First Time Fix (FTF 60D)</Text>
                 <Metric>{technicianSummary.ftf}</Metric>
                 <ProgressBar value={Number.parseFloat(technicianSummary.ftf)} color={getFtfVisualLevel(Number.parseFloat(technicianSummary.ftf)).textClass.includes('emerald') ? 'emerald' : getFtfVisualLevel(Number.parseFloat(technicianSummary.ftf)).textClass.includes('amber') ? 'amber' : 'rose'} className="mt-2" />
               </Card>
@@ -6598,9 +6727,9 @@ export default function DashboardMultimodular() {
                 <Metric className="text-current">{technicianSummary.closure}</Metric>
                 <Text className="mt-2 text-xs">Meta: 85%+</Text>
               </Card>
-              <Card className={`border ${getSemaforoClass(getReentryLevel(Number.parseFloat(technicianSummary.reentry30)))}`}>
-                <Text className="text-current/80">Reingreso 30D</Text>
-                <Metric className="text-current">{technicianSummary.reentry30}</Metric>
+              <Card className={`border ${getSemaforoClass(getReentryLevel(Number.parseFloat(technicianSummary.reentry60)))}`}>
+                <Text className="text-current/80">Reingresos 60D</Text>
+                <Metric className="text-current">{technicianSummary.reentry60}</Metric>
                 <Text className="mt-2 text-xs">Meta: &lt; 5%</Text>
               </Card>
               <Card className={`border ${getSemaforoClass(getWipLevel(technicianSummary.wipPct))}`}>
@@ -6649,8 +6778,8 @@ export default function DashboardMultimodular() {
                       <th className="border border-lime-700 px-3 py-2 text-center">Controles_QC</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">WIP</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">% Cierre</th>
-                      <th className="border border-lime-700 px-3 py-2 text-center">FTF 30D</th>
-                      <th className="border border-lime-700 px-3 py-2 text-center">Reingreso 30D</th>
+                      <th className="border border-lime-700 px-3 py-2 text-center">FTF 60D</th>
+                      <th className="border border-lime-700 px-3 py-2 text-center">Reingreso 60D</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">SLA</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">Cerrada</th>
                       <th className="border border-lime-700 px-3 py-2 text-center">Cerró / Despachó</th>
@@ -6667,8 +6796,8 @@ export default function DashboardMultimodular() {
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.controlesQc}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.wip}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center font-semibold">{row.closurePct}</td>
-                        <td className="border border-slate-200 px-3 py-2 text-center font-semibold">{row.ftf30}</td>
-                        <td className="border border-slate-200 px-3 py-2 text-center">{row.reentry30}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-center font-semibold">{row.ftf60}</td>
+                        <td className="border border-slate-200 px-3 py-2 text-center">{row.reentry60}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.sla}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center">{row.cerrada}</td>
                         <td className="border border-slate-200 px-3 py-2 text-center whitespace-nowrap">{row.closingOwner}</td>
