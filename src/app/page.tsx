@@ -1280,6 +1280,27 @@ const getLateReason = (order: Record<string, any>) => {
   if (agingDays <= targetDays) return 'En SLA';
 
   const status = normalizeText(order?.status?.name);
+/**
+ * Estados "Pendiente": el equipo está detenido por causas ajenas al taller
+ * (espera de aprobación, partes, escalamiento, etc.). Se pueden excluir del
+ * cálculo de SLA para medir el cumplimiento real del proceso técnico.
+ */
+const PENDIENTE_SLA_STATUSES = [
+  'ESPERANDO APROBACION',
+  'SWAPS PCBA',
+  'SWAPS-PCBA',
+  'ESCALADA PARA NC',
+  'PRESUPUESTO RECHAZADO',
+  'ESPERANDO PARTES',
+  'ESCALADO LIFE ONE',
+  'ESCALADO LIFE-ONE',
+];
+
+const isPendienteOrder = (order: Record<string, any>) => {
+  const status = normalizeText(order?.status?.name || '');
+  return PENDIENTE_SLA_STATUSES.some((marker) => status.includes(normalizeText(marker)));
+};
+
   if (status.includes('APROBACION')) return 'Esperando aprobación';
   if (status.includes('PARTES') || status.includes('REPUEST')) return 'Esperando repuestos';
   if (status.includes('QA') || status.includes('CALIDAD') || status.includes('VALIDACION')) return 'En QA';
@@ -2099,6 +2120,64 @@ const classifyBonusProductLine = (productGroup: string): BonusProductLine | null
   // ASPIRADORAS: todo tipo de aspiradora y robot aspiradora
   if (g.includes('ASPIRADORA') || (g.includes('ROBOT') && g.includes('ASPIRADORA'))) return 'ASPIRADORAS';
   // SCOOTER: scooters eléctricos y e-mobility
+const TECH_PRODUCTIVITY_TOOLTIP_ITEMS: { key: string; label: string; color: string }[] = [
+  { key: 'Asignadas', label: 'Asignadas', color: '#64748b' },
+  { key: 'Nuevo / En espera', label: 'Nuevo / En espera', color: '#9ca3af' },
+  { key: 'En reparación', label: 'En reparación', color: '#3b82f6' },
+  { key: 'Pendiente', label: 'Pendiente', color: '#f59e0b' },
+  { key: 'Cerradas', label: 'Cerradas', color: '#10b981' },
+  { key: 'Fuera SLA', label: 'Fuera SLA', color: '#f43f5e' },
+];
+
+function TechnicianProductivityTooltip({ active, payload, label }: any) {
+  if (!active || !payload || !payload.length) return null;
+  const row = payload[0]?.payload || {};
+  const osNumbers: string[] = Array.isArray(row.osNumbers) ? row.osNumbers : [];
+  const isUnassigned = label === 'Sin asignar';
+
+  return (
+    <div className="min-w-[210px] rounded-tremor-default border border-tremor-border bg-tremor-background p-3 text-tremor-default shadow-tremor-dropdown">
+      <p className="mb-2 font-semibold uppercase tracking-wide text-tremor-content-emphasis">{label}</p>
+      <div className="space-y-1">
+        {TECH_PRODUCTIVITY_TOOLTIP_ITEMS.map((item) => (
+          <div key={item.key} className="flex items-center justify-between gap-6">
+            <span className="flex items-center gap-2 text-tremor-content">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+              {item.label}
+            </span>
+            <span className="font-medium tabular-nums text-tremor-content-emphasis">{row[item.key] ?? 0}</span>
+          </div>
+        ))}
+        <div className="mt-1 flex items-center justify-between gap-6 border-t border-tremor-border pt-1.5">
+          <span className="flex items-center gap-2 text-tremor-content">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: '#8b5cf6' }} />
+            WIP (en proceso)
+          </span>
+          <span className="font-bold tabular-nums text-violet-600">{row.WIP ?? 0}</span>
+        </div>
+      </div>
+
+      {isUnassigned && osNumbers.length > 0 && (
+        <div className="mt-2 border-t border-tremor-border pt-2">
+          <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-tremor-content-subtle">
+            OS sin asignar ({osNumbers.length})
+          </p>
+          <div className="flex max-w-[230px] flex-wrap gap-1">
+            {osNumbers.slice(0, 30).map((os) => (
+              <span key={os} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
+                {os}
+              </span>
+            ))}
+            {osNumbers.length > 30 && (
+              <span className="text-[10px] text-slate-400">+{osNumbers.length - 30} más</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
   if (g.includes('SCOOTER') || g.includes('E MOBILITY') || g.includes('EMOBILITY')) return 'SCOOTER';
   // BLACK AND DECKER: herramientas eléctricas
   if (g.includes('HERRAMIENTA') || g.includes('TALADRO') || g.includes('BLACK') || g.includes('DECKER')) return 'BLACK AND DECKER';
@@ -2204,6 +2283,7 @@ export default function DashboardMultimodular() {
   const [selectedBodegaBrand, setSelectedBodegaBrand] = useState('ALL');
   const [selectedBodegaModel, setSelectedBodegaModel] = useState('ALL');
   const [selectedBodegaGroup, setSelectedBodegaGroup] = useState('ALL');
+  const [excludePendingFromSla, setExcludePendingFromSla] = useState(false);
   const [selectedFunnelStage, setSelectedFunnelStage] = useState('Creada');
   const [qaAgingPage, setQaAgingPage] = useState(0);
   const QA_AGING_PAGE_SIZE = 15;
@@ -2733,7 +2813,14 @@ export default function DashboardMultimodular() {
         : '0.0';
 
       const backlog = filteredOrders.filter((order) => isWipEligibleOrder(order)).length;
-      const slaMet = filteredOrders.filter((order) => isOrderWithinSla(order)).length;
+
+      // SLA: si el filtro está activo, se excluyen los equipos en estatus "Pendiente"
+      const slaBase = excludePendingFromSla
+        ? filteredOrders.filter((order) => !isPendienteOrder(order))
+        : filteredOrders;
+      const slaTotal = slaBase.length;
+      const slaMet = slaBase.filter((order) => isOrderWithinSla(order)).length;
+
       const accepted = filteredOrders.filter((order) => {
         const status = normalizeText(order?.status?.name);
         return !status.includes('RECHAZ') && !status.includes('NOTA DE CREDITO');
@@ -2741,7 +2828,7 @@ export default function DashboardMultimodular() {
 
       return {
         tat: `${avgE2E} días`,
-        sla: `${total ? Math.round((slaMet / total) * 100) : 0}%`,
+        sla: `${slaTotal ? Math.round((slaMet / slaTotal) * 100) : 0}%`,
         backlog,
         bounce: `${serialBounceSummary.kpiRate.toFixed(2)}%`,
         claim: `${total ? Math.round((accepted / total) * 100) : 0}%`,
@@ -2757,7 +2844,7 @@ export default function DashboardMultimodular() {
     };
 
     return byDate[selectedDateRange];
-  }, [hasLiveData, filteredOrders, selectedDateRange, serialBounceSummary]);
+  }, [hasLiveData, filteredOrders, selectedDateRange, serialBounceSummary, excludePendingFromSla]);
 
   /** TAT especial para Móviles (Smartphones / Teléfonos Celulares) — meta: 2 días hábiles */
   const TAT_MOVILES_TARGET = 2;
@@ -3001,14 +3088,27 @@ export default function DashboardMultimodular() {
   }, [hasLiveData, filteredOrders, totalWip]);
 
   const slaScopedOrders = useMemo(() => {
-    return filteredOrders.filter((order) => isWipEligibleOrder(order) && Boolean(order?.created_at));
+    return filteredOrders.filter((order) =>
+      isWipEligibleOrder(order) &&
+      Boolean(order?.created_at) &&
+      (!excludePendingFromSla || !isPendienteOrder(order))
+    );
+  }, [filteredOrders, excludePendingFromSla]);
+
+  const slaPendingExcludableCount = useMemo(() => {
+    return filteredOrders.filter((order) =>
+      isWipEligibleOrder(order) && Boolean(order?.created_at) && isPendienteOrder(order)
+    ).length;
   }, [filteredOrders]);
 
   const overdueSlaOrders = useMemo(() => {
     return filteredOrders
       .filter((order) => {
         const reason = getLateReason(order);
-        return isWipEligibleOrder(order) && reason !== 'En SLA' && reason !== 'Sin SLA';
+        return isWipEligibleOrder(order) &&
+          reason !== 'En SLA' &&
+          reason !== 'Sin SLA' &&
+          (!excludePendingFromSla || !isPendienteOrder(order));
       })
       .map((order) => ({
         id: String(order?.id || order?.number || 'SIN-ID'),
@@ -3023,7 +3123,7 @@ export default function DashboardMultimodular() {
         slaTarget: getSlaTargetDays(order) || 0,
       }))
       .sort((a, b) => b.overdueDays - a.overdueDays);
-  }, [filteredOrders]);
+  }, [filteredOrders, excludePendingFromSla]);
 
   const slaOrderDetails = useMemo(() => {
     if (selectedSlaSegment === 'Fuera SLA') return overdueSlaOrders;
@@ -3068,7 +3168,8 @@ export default function DashboardMultimodular() {
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, selectedSlaSegment === 'Fuera SLA' ? 'SLA Vencidas' : 'En SLA');
-    const filename = `SLA_${selectedSlaSegment.replace(' ', '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const pendingSuffix = excludePendingFromSla ? '_SinPendientes' : '';
+    const filename = `SLA_${selectedSlaSegment.replace(' ', '_')}${pendingSuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
     XLSX.writeFile(wb, filename);
   };
 
@@ -4695,25 +4796,12 @@ export default function DashboardMultimodular() {
     };
   }, [hasLiveData, filteredOrders, selectedQcFromDate, selectedQcToDate]);
 
-  const isPendienteOrder = (order: Record<string, any>) => {
-    const status = normalizeText(order?.status?.name || '');
-    return [
-      'ESPERANDO APROBACION',
-      'SWAPS PCBA',
-      'SWAPS-PCBA',
-      'ESCALADA PARA NC',
-      'PRESUPUESTO RECHAZADO',
-      'ESPERANDO PARTES',
-      'ESCALADO LIFE ONE',
-      'ESCALADO LIFE-ONE'
-    ].some(marker => status.includes(normalizeText(marker)));
-  };
-
   const technicianProductivitySlaData = useMemo(() => {
-    return technicianRankingData.slice(0, 8).map((item) => {
-      const relatedOrders = filteredOrders.filter((order) => extractTechnicianFromOrder(order) === item.name);
+      let wipCount = 0;
+    const buildRow = (name: string) => {
+      const relatedOrders = filteredOrders.filter((order) => extractTechnicianFromOrder(order) === name);
       const outSla7 = relatedOrders.filter((order) => getOrderProcessingDays(order) > 7).length;
-      
+
       let enReparacionCount = 0;
       let pendienteCount = 0;
       let cerradasCount = 0;
@@ -4721,7 +4809,7 @@ export default function DashboardMultimodular() {
 
       relatedOrders.forEach((order) => {
         const status = normalizeText(order?.status?.name || '');
-        
+
         const isCerrada = [
           'PARA DEVOLVER CAMBIO AGENCIA', 'ENTREGADO/LIFE-ONE', 'ENTREGADO-NOTA DE CREDITO', 
           'NOTA DE CREDITO VALIDACION SAP', 'ARCHIVADO', 'PARA DEVOLVER CAC', 
@@ -4729,6 +4817,8 @@ export default function DashboardMultimodular() {
         ].some(marker => status.includes(normalizeText(marker))) || isDispatchStatus(order);
 
         const isPendiente = isPendienteOrder(order);
+        if (isWipEligibleOrder(order)) wipCount++;
+
 
         const isReparacion = [
           'REPARADO', 'CONTROL DE CALIDAD', 'N.C. EN CONTROL DE CALIDAD', 
@@ -4741,6 +4831,10 @@ export default function DashboardMultimodular() {
           cerradasCount++;
         } else if (isPendiente) {
           pendienteCount++;
+      const osNumbers = relatedOrders
+        .map((order) => String(order?.number || order?.id || '').trim())
+        .filter(Boolean);
+
         } else if (isReparacion) {
           enReparacionCount++;
         } else {
@@ -4749,8 +4843,10 @@ export default function DashboardMultimodular() {
         }
       });
 
+        WIP: wipCount,
+        osNumbers,
       return {
-        name: item.name,
+        name,
         Asignadas: relatedOrders.length,
         'Nuevo / En espera': nuevoCount,
         'En reparación': enReparacionCount,
@@ -4758,7 +4854,17 @@ export default function DashboardMultimodular() {
         Cerradas: cerradasCount,
         'Fuera SLA': outSla7,
       };
-    });
+    };
+
+    const rows = technicianRankingData.slice(0, 8).map((item) => buildRow(item.name));
+
+    // "Sin asignar" se excluye del ranking, lo agregamos como barra propia al final
+    const unassignedRow = buildRow('Sin asignar');
+    if (unassignedRow.Asignadas > 0) {
+      rows.push(unassignedRow);
+    }
+
+    return rows;
   }, [technicianRankingData, filteredOrders]);
 
   const bodegaTrackingSummary = useMemo(() => {
@@ -5953,7 +6059,7 @@ export default function DashboardMultimodular() {
             <Grid numItemsSm={1} numItemsMd={2} numItemsLg={5} className="gap-4 mb-6">
               {[
                 { title: 'TAT Promedio E2E', value: complianceMetrics.tat, progress: 85, color: 'blue', icon: Clock },
-                { title: '% SLA Cumplido', value: complianceMetrics.sla, progress: Number.parseFloat(complianceMetrics.sla), color: 'emerald', icon: CheckCircle },
+                { title: excludePendingFromSla ? '% SLA Cumplido (sin pendientes)' : '% SLA Cumplido', value: complianceMetrics.sla, progress: Number.parseFloat(complianceMetrics.sla), color: 'emerald', icon: CheckCircle },
                 { title: 'Backlog Total', value: totalWip, progress: 70, color: 'amber', icon: Archive },
                 { title: 'Bounce Rate', value: complianceMetrics.bounce, progress: Math.max(0, 100 - Number.parseFloat(complianceMetrics.bounce)), color: 'rose', icon: Activity },
                 { title: 'Claim Acceptance', value: complianceMetrics.claim, progress: Number.parseFloat(complianceMetrics.claim), color: 'indigo', icon: ShieldCheck },
@@ -6044,7 +6150,10 @@ export default function DashboardMultimodular() {
               <Card>
                 <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
                   <div>
-                    <Title>{selectedSlaSegment === 'Fuera SLA' ? 'Órdenes SLA vencidas' : 'Órdenes en SLA'}</Title>
+                    <Flex justifyContent="start" alignItems="center" className="gap-2">
+                      <Title>{selectedSlaSegment === 'Fuera SLA' ? 'Órdenes SLA vencidas' : 'Órdenes en SLA'}</Title>
+                      {excludePendingFromSla && <Badge color="amber" size="xs">Sin pendientes</Badge>}
+                    </Flex>
                     <Text className="mt-1 text-xs text-slate-500">Haz clic en el medidor de SLA para poblar este detalle con las OS del estado seleccionado.</Text>
                   </div>
                   <Badge color={selectedSlaSegment === 'Fuera SLA' ? 'rose' : 'emerald'}>
@@ -6121,6 +6230,24 @@ export default function DashboardMultimodular() {
                       )}
                     </tbody>
                   </table>
+                </div>
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <label className="flex cursor-pointer items-start gap-2.5">
+                    <input
+                      type="checkbox"
+                      checked={excludePendingFromSla}
+                      onChange={(e) => setExcludePendingFromSla(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span className="text-xs text-slate-600">
+                      <span className="font-semibold text-slate-700">Excluir equipos en estatus &quot;Pendiente&quot;</span>
+                      {' '}
+                      <Badge color="amber" size="xs">{slaPendingExcludableCount}</Badge>
+                      <span className="mt-1 block text-[11px] text-slate-500">
+                        Quita del SLA los casos detenidos por causas externas (Esperando aprobación, Swaps-PCBA, Escalada para NC, Presupuesto rechazado, Esperando partes, Escalado Life-One) para medir el cumplimiento real del taller.
+                      </span>
+                    </span>
+                  </label>
                 </div>
               </Card>
             </Grid>
@@ -6203,6 +6330,7 @@ export default function DashboardMultimodular() {
                 <Title>Productividad por Técnico</Title>
                 <Text className="mt-2 text-xs text-slate-500">Comparativo entre carga asignada, avance técnico, cierres y casos fuera de SLA.</Text>
                 <BarChart
+                  customTooltip={TechnicianProductivityTooltip}
                   className="mt-6 h-80"
                   data={technicianProductivitySlaData}
                   index="name"
