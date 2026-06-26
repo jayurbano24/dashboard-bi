@@ -2284,6 +2284,7 @@ export default function DashboardMultimodular() {
   const [selectedSlaSegment, setSelectedSlaSegment] = useState<'En SLA' | 'Fuera SLA'>('Fuera SLA');
   const [slaEquipFilter, setSlaEquipFilter] = useState('ALL');
   const [excludePendingFromSla, setExcludePendingFromSla] = useState(false);
+  const [excludedSlaStatuses, setExcludedSlaStatuses] = useState<string[]>([]);
   const [availableBrands, setAvailableBrands] = useState<string[]>(FALLBACK_BRANDS);
   const [availableTechnicians, setAvailableTechnicians] = useState<string[]>(FALLBACK_TECHNICIANS);
   const [ordersData, setOrdersData] = useState<Record<string, any>[]>([]);
@@ -2807,9 +2808,11 @@ export default function DashboardMultimodular() {
       const backlog = filteredOrders.filter((order) => isWipEligibleOrder(order)).length;
 
       // SLA: si el filtro está activo, se excluyen los equipos en estatus "Pendiente"
-      const slaBase = excludePendingFromSla
-        ? filteredOrders.filter((order) => !isPendienteOrder(order))
-        : filteredOrders;
+      // y/o los estatus marcados manualmente (p. ej. "Para devolver - Nota de crédito").
+      const slaBase = filteredOrders.filter((order) =>
+        (!excludePendingFromSla || !isPendienteOrder(order)) &&
+        !excludedSlaStatuses.includes(normalizeText(order?.status?.name || ''))
+      );
       const slaTotal = slaBase.length;
       const slaMet = slaBase.filter((order) => isOrderWithinSla(order)).length;
 
@@ -2836,7 +2839,7 @@ export default function DashboardMultimodular() {
     };
 
     return byDate[selectedDateRange];
-  }, [hasLiveData, filteredOrders, selectedDateRange, serialBounceSummary, excludePendingFromSla]);
+  }, [hasLiveData, filteredOrders, selectedDateRange, serialBounceSummary, excludePendingFromSla, excludedSlaStatuses]);
 
   /** TAT especial para Móviles (Smartphones / Teléfonos Celulares) — meta: 2 días hábiles */
   const TAT_MOVILES_TARGET = 2;
@@ -3083,8 +3086,26 @@ export default function DashboardMultimodular() {
     return filteredOrders.filter((order) =>
       isWipEligibleOrder(order) &&
       Boolean(order?.created_at) &&
-      (!excludePendingFromSla || !isPendienteOrder(order))
+      (!excludePendingFromSla || !isPendienteOrder(order)) &&
+      !excludedSlaStatuses.includes(normalizeText(order?.status?.name || ''))
     );
+  }, [filteredOrders, excludePendingFromSla, excludedSlaStatuses]);
+
+  // Estatus presentes entre las órdenes "Fuera SLA" (ignora la exclusión manual para
+  // poder volver a activarlos). Cada chip permite excluir/incluir ese estatus del cálculo.
+  const slaExcludableStatuses = useMemo(() => {
+    const grouped = new Map<string, number>();
+    filteredOrders.forEach((order) => {
+      if (!isWipEligibleOrder(order) || !order?.created_at) return;
+      if (excludePendingFromSla && isPendienteOrder(order)) return;
+      const reason = getLateReason(order);
+      if (reason === 'En SLA' || reason === 'Sin SLA') return;
+      const name = order?.status?.name || 'Sin estatus';
+      grouped.set(name, (grouped.get(name) || 0) + 1);
+    });
+    return Array.from(grouped.entries())
+      .map(([name, count]) => ({ name, key: normalizeText(name), count }))
+      .sort((a, b) => b.count - a.count);
   }, [filteredOrders, excludePendingFromSla]);
 
   const slaPendingExcludableCount = useMemo(() => {
@@ -3100,7 +3121,8 @@ export default function DashboardMultimodular() {
         return isWipEligibleOrder(order) &&
           reason !== 'En SLA' &&
           reason !== 'Sin SLA' &&
-          (!excludePendingFromSla || !isPendienteOrder(order));
+          (!excludePendingFromSla || !isPendienteOrder(order)) &&
+          !excludedSlaStatuses.includes(normalizeText(order?.status?.name || ''));
       })
       .map((order) => ({
         id: String(order?.id || order?.number || 'SIN-ID'),
@@ -3115,7 +3137,7 @@ export default function DashboardMultimodular() {
         slaTarget: getSlaTargetDays(order) || 0,
       }))
       .sort((a, b) => b.overdueDays - a.overdueDays);
-  }, [filteredOrders, excludePendingFromSla]);
+  }, [filteredOrders, excludePendingFromSla, excludedSlaStatuses]);
 
   const slaOrderDetails = useMemo(() => {
     if (selectedSlaSegment === 'Fuera SLA') return overdueSlaOrders;
@@ -3161,7 +3183,8 @@ export default function DashboardMultimodular() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, selectedSlaSegment === 'Fuera SLA' ? 'SLA Vencidas' : 'En SLA');
     const pendingSuffix = excludePendingFromSla ? '_SinPendientes' : '';
-    const filename = `SLA_${selectedSlaSegment.replace(' ', '_')}${pendingSuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const statusSuffix = excludedSlaStatuses.length ? '_EstatusExcluidos' : '';
+    const filename = `SLA_${selectedSlaSegment.replace(' ', '_')}${pendingSuffix}${statusSuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
     XLSX.writeFile(wb, filename);
   };
 
@@ -6146,6 +6169,9 @@ export default function DashboardMultimodular() {
                     <Flex justifyContent="start" alignItems="center" className="gap-2">
                       <Title>{selectedSlaSegment === 'Fuera SLA' ? 'Órdenes SLA vencidas' : 'Órdenes en SLA'}</Title>
                       {excludePendingFromSla && <Badge color="amber" size="xs">Sin pendientes</Badge>}
+                      {excludedSlaStatuses.length > 0 && (
+                        <Badge color="violet" size="xs">{excludedSlaStatuses.length} estatus excluido{excludedSlaStatuses.length === 1 ? '' : 's'}</Badge>
+                      )}
                     </Flex>
                     <Text className="mt-1 text-xs text-slate-500">Haz clic en el medidor de SLA para poblar este detalle con las OS del estado seleccionado.</Text>
                   </div>
@@ -6184,6 +6210,51 @@ export default function DashboardMultimodular() {
                     </Select>
                   </div>
                 </div>
+                {slaExcludableStatuses.length > 0 && (
+                  <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <Flex justifyContent="between" alignItems="center" className="gap-2">
+                      <Text className="text-xs font-semibold text-slate-700">
+                        Excluir estatus del cálculo SLA
+                      </Text>
+                      {excludedSlaStatuses.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setExcludedSlaStatuses([])}
+                          className="text-[11px] font-medium text-slate-500 underline hover:text-slate-700"
+                        >
+                          Limpiar
+                        </button>
+                      )}
+                    </Flex>
+                    <Text className="mt-0.5 text-[11px] text-slate-500">
+                      Selecciona los estatus que no deben contar como incumplimiento (p. ej. &quot;Para devolver - Nota de crédito&quot;). La métrica de SLA se recalcula al instante.
+                    </Text>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {slaExcludableStatuses.map(({ name, key, count }) => {
+                        const isExcluded = excludedSlaStatuses.includes(key);
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() =>
+                              setExcludedSlaStatuses((prev) =>
+                                prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+                              )
+                            }
+                            className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                              isExcluded
+                                ? 'border-violet-300 bg-violet-100 text-violet-700 line-through'
+                                : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            <span>{name}</span>
+                            <span className={`rounded-full px-1.5 text-[10px] ${isExcluded ? 'bg-violet-200 text-violet-800' : 'bg-slate-100 text-slate-500'}`}>{count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="mt-6 overflow-x-auto max-h-[380px]">
                   <table className="min-w-full border border-slate-200 text-sm">
                     <thead className="bg-slate-100 sticky top-0">
