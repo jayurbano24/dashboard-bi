@@ -1280,6 +1280,14 @@ const getLateReason = (order: Record<string, any>) => {
   if (agingDays <= targetDays) return 'En SLA';
 
   const status = normalizeText(order?.status?.name);
+  if (status.includes('APROBACION')) return 'Esperando aprobación';
+  if (status.includes('PARTES') || status.includes('REPUEST')) return 'Esperando repuestos';
+  if (status.includes('QA') || status.includes('CALIDAD') || status.includes('VALIDACION')) return 'En QA';
+  if (status.includes('REPARACION')) return 'En reparación';
+  if (status.includes('DIAGNOSTICO')) return 'En diagnóstico';
+  return 'Atraso operativo';
+};
+
 /**
  * Estados "Pendiente": el equipo está detenido por causas ajenas al taller
  * (espera de aprobación, partes, escalamiento, etc.). Se pueden excluir del
@@ -1299,14 +1307,6 @@ const PENDIENTE_SLA_STATUSES = [
 const isPendienteOrder = (order: Record<string, any>) => {
   const status = normalizeText(order?.status?.name || '');
   return PENDIENTE_SLA_STATUSES.some((marker) => status.includes(normalizeText(marker)));
-};
-
-  if (status.includes('APROBACION')) return 'Esperando aprobación';
-  if (status.includes('PARTES') || status.includes('REPUEST')) return 'Esperando repuestos';
-  if (status.includes('QA') || status.includes('CALIDAD') || status.includes('VALIDACION')) return 'En QA';
-  if (status.includes('REPARACION')) return 'En reparación';
-  if (status.includes('DIAGNOSTICO')) return 'En diagnóstico';
-  return 'Atraso operativo';
 };
 
 const getBusinessDaysDiff = (startDate: Date, endDate: Date) => {
@@ -2120,6 +2120,14 @@ const classifyBonusProductLine = (productGroup: string): BonusProductLine | null
   // ASPIRADORAS: todo tipo de aspiradora y robot aspiradora
   if (g.includes('ASPIRADORA') || (g.includes('ROBOT') && g.includes('ASPIRADORA'))) return 'ASPIRADORAS';
   // SCOOTER: scooters eléctricos y e-mobility
+  if (g.includes('SCOOTER') || g.includes('E MOBILITY') || g.includes('EMOBILITY')) return 'SCOOTER';
+  // BLACK AND DECKER: herramientas eléctricas
+  if (g.includes('HERRAMIENTA') || g.includes('TALADRO') || g.includes('BLACK') || g.includes('DECKER')) return 'BLACK AND DECKER';
+  return null;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const TECH_PRODUCTIVITY_TOOLTIP_ITEMS: { key: string; label: string; color: string }[] = [
   { key: 'Asignadas', label: 'Asignadas', color: '#64748b' },
   { key: 'Nuevo / En espera', label: 'Nuevo / En espera', color: '#9ca3af' },
@@ -2177,14 +2185,6 @@ function TechnicianProductivityTooltip({ active, payload, label }: any) {
     </div>
   );
 }
-
-  if (g.includes('SCOOTER') || g.includes('E MOBILITY') || g.includes('EMOBILITY')) return 'SCOOTER';
-  // BLACK AND DECKER: herramientas eléctricas
-  if (g.includes('HERRAMIENTA') || g.includes('TALADRO') || g.includes('BLACK') || g.includes('DECKER')) return 'BLACK AND DECKER';
-  return null;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 export default function DashboardMultimodular() {
   const router = useRouter();
@@ -2283,7 +2283,6 @@ export default function DashboardMultimodular() {
   const [selectedBodegaBrand, setSelectedBodegaBrand] = useState('ALL');
   const [selectedBodegaModel, setSelectedBodegaModel] = useState('ALL');
   const [selectedBodegaGroup, setSelectedBodegaGroup] = useState('ALL');
-  const [excludePendingFromSla, setExcludePendingFromSla] = useState(false);
   const [selectedFunnelStage, setSelectedFunnelStage] = useState('Creada');
   const [qaAgingPage, setQaAgingPage] = useState(0);
   const QA_AGING_PAGE_SIZE = 15;
@@ -2292,6 +2291,7 @@ export default function DashboardMultimodular() {
   const [selectedFunnelDay, setSelectedFunnelDay] = useState('ALL');
   const [selectedSlaSegment, setSelectedSlaSegment] = useState<'En SLA' | 'Fuera SLA'>('Fuera SLA');
   const [slaEquipFilter, setSlaEquipFilter] = useState('ALL');
+  const [excludePendingFromSla, setExcludePendingFromSla] = useState(false);
   const [availableBrands, setAvailableBrands] = useState<string[]>(FALLBACK_BRANDS);
   const [availableTechnicians, setAvailableTechnicians] = useState<string[]>(FALLBACK_TECHNICIANS);
   const [ordersData, setOrdersData] = useState<Record<string, any>[]>([]);
@@ -4797,7 +4797,6 @@ export default function DashboardMultimodular() {
   }, [hasLiveData, filteredOrders, selectedQcFromDate, selectedQcToDate]);
 
   const technicianProductivitySlaData = useMemo(() => {
-      let wipCount = 0;
     const buildRow = (name: string) => {
       const relatedOrders = filteredOrders.filter((order) => extractTechnicianFromOrder(order) === name);
       const outSla7 = relatedOrders.filter((order) => getOrderProcessingDays(order) > 7).length;
@@ -4806,6 +4805,7 @@ export default function DashboardMultimodular() {
       let pendienteCount = 0;
       let cerradasCount = 0;
       let nuevoCount = 0;
+      let wipCount = 0;
 
       relatedOrders.forEach((order) => {
         const status = normalizeText(order?.status?.name || '');
@@ -4817,8 +4817,6 @@ export default function DashboardMultimodular() {
         ].some(marker => status.includes(normalizeText(marker))) || isDispatchStatus(order);
 
         const isPendiente = isPendienteOrder(order);
-        if (isWipEligibleOrder(order)) wipCount++;
-
 
         const isReparacion = [
           'REPARADO', 'CONTROL DE CALIDAD', 'N.C. EN CONTROL DE CALIDAD', 
@@ -4827,14 +4825,12 @@ export default function DashboardMultimodular() {
         isTechnicianRepairCompletedStatus(order?.status?.name || '') || 
         isQaStatus(order?.status?.name || '');
 
+        if (isWipEligibleOrder(order)) wipCount++;
+
         if (isCerrada) {
           cerradasCount++;
         } else if (isPendiente) {
           pendienteCount++;
-      const osNumbers = relatedOrders
-        .map((order) => String(order?.number || order?.id || '').trim())
-        .filter(Boolean);
-
         } else if (isReparacion) {
           enReparacionCount++;
         } else {
@@ -4843,8 +4839,10 @@ export default function DashboardMultimodular() {
         }
       });
 
-        WIP: wipCount,
-        osNumbers,
+      const osNumbers = relatedOrders
+        .map((order) => String(order?.number || order?.id || '').trim())
+        .filter(Boolean);
+
       return {
         name,
         Asignadas: relatedOrders.length,
@@ -4853,6 +4851,8 @@ export default function DashboardMultimodular() {
         Pendiente: pendienteCount,
         Cerradas: cerradasCount,
         'Fuera SLA': outSla7,
+        WIP: wipCount,
+        osNumbers,
       };
     };
 
@@ -6231,6 +6231,13 @@ export default function DashboardMultimodular() {
                     </tbody>
                   </table>
                 </div>
+              </Card>
+            </Grid>
+
+            <Grid numItemsLg={3} className="gap-6 mb-6">
+              <Card>
+                <Title>Velocidad · TAT y SLA</Title>
+                <Text className="mt-2 text-xs text-slate-500">Medidor general del período y tarjetas rápidas por técnico.</Text>
                 <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <label className="flex cursor-pointer items-start gap-2.5">
                     <input
@@ -6249,13 +6256,6 @@ export default function DashboardMultimodular() {
                     </span>
                   </label>
                 </div>
-              </Card>
-            </Grid>
-
-            <Grid numItemsLg={3} className="gap-6 mb-6">
-              <Card>
-                <Title>Velocidad · TAT y SLA</Title>
-                <Text className="mt-2 text-xs text-slate-500">Medidor general del período y tarjetas rápidas por técnico.</Text>
                 <DonutChart
                   className="mt-6 h-52"
                   data={speedGaugeData}
@@ -6330,7 +6330,6 @@ export default function DashboardMultimodular() {
                 <Title>Productividad por Técnico</Title>
                 <Text className="mt-2 text-xs text-slate-500">Comparativo entre carga asignada, avance técnico, cierres y casos fuera de SLA.</Text>
                 <BarChart
-                  customTooltip={TechnicianProductivityTooltip}
                   className="mt-6 h-80"
                   data={technicianProductivitySlaData}
                   index="name"
@@ -6338,6 +6337,7 @@ export default function DashboardMultimodular() {
                   colors={["slate", "gray", "blue", "amber", "emerald", "rose"]}
                   layout="vertical"
                   yAxisWidth={110}
+                  customTooltip={TechnicianProductivityTooltip}
                 />
               </Card>
             </Grid>
