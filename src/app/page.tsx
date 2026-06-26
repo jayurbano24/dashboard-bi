@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, useTransition, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
+import ClaimsXiaomiModule from './claims-xiaomi/ClaimsXiaomiModule';
 import {
   Card,
   DonutChart,
@@ -256,10 +257,10 @@ const CLAIM_UPLOAD_TEMPLATE_COLUMNS = [
   'operator_service_order_number',
   'ISP_SC_code',
   'service_center_code',
-  'customer_email',
   'PO_number',
-  'dealer_name',
   'customer_type',
+  'Operator_Name_Code',
+  'customer_email',
   'service_mode',
   'service_type',
   'Return_type',
@@ -272,9 +273,9 @@ const CLAIM_UPLOAD_TEMPLATE_COLUMNS = [
   'invoice_time',
   'goods_id',
   'SN_Or_IMEI1',
-  'newSN',
-  'new_IMEI',
+  'newSN_Or_IMEI1',
   'Is_user_damange',
+  'Accept_satisfaction_survey',
   'create_time',
   'SC_express_receipt_time',
   'actual_visit_time',
@@ -292,26 +293,19 @@ const CLAIM_UPLOAD_TEMPLATE_COLUMNS = [
   'Activity_Project',
   'remark',
   'defect_description',
-  'Goodid',
-  'B2B',
+  'whether_to_write_the_number',
   'old_PN1',
-  'old_SN1',
-  'old_IMEI1',
+  'old_SN1_Or_IMEI1',
   'new_PN1',
-  'new_SN1',
-  'new_IMEI1',
+  'new_SN1_Or_IMEI1',
   'old_PN2',
-  'old_SN2',
-  'old_IMEI2',
+  'old_SN2_Or_IMEI2',
   'new_PN2',
-  'new_SN2',
-  'new_IMEI2',
+  'new_SN2_Or_IMEI2',
   'old_PN3',
-  'old_SN3',
-  'old_IMEI3',
+  'old_SN3_Or_IMEI3',
   'new_PN3',
-  'new_SN3',
-  'new_IMEI3',
+  'new_SN3_Or_IMEI3',
   'old_PN4',
   'new_PN4',
   'old_PN5',
@@ -321,11 +315,7 @@ const CLAIM_UPLOAD_TEMPLATE_COLUMNS = [
   'old_PN7',
   'new_PN7',
   'old_PN8',
-  'new_PN8',
-  'old_PN9',
-  'new_PN9',
-  'old_PN10',
-  'new_PN10',
+  'new_PN8'
 ] as const;
 
 const AGING_DATA = [
@@ -951,6 +941,8 @@ const isPhoneClaimOrder = (order: Record<string, any>) => {
     group.includes('SMARTPHONE') ||
     group.includes('TELEFONO') ||
     group.includes('PHONE') ||
+    group.includes('TABLET') ||
+    group.includes('FEATURE') ||
     descriptor.includes('SMARTPHONE') ||
     descriptor.includes('TELEFONO MOVIL')
   );
@@ -5342,8 +5334,6 @@ export default function DashboardMultimodular() {
   }, [claimsValidationBaseRows, selectedClaimsStatus, claimsSearch]);
 
   const claimsGeneratorRows = useMemo(() => {
-    const normalizedBrand = normalizeText(selectedClaimGeneratorBrand);
-
     const isWithinCurrentScope = (order: Record<string, any>) => {
       const referenceDate = order?.closed_at || order?.done_at || order?.modified_at || order?.created_at;
 
@@ -5356,25 +5346,61 @@ export default function DashboardMultimodular() {
       return isWithinSelectedRange(referenceDate, selectedDateRange);
     };
 
-    const matchesBrand = (order: Record<string, any>) => {
+    const isXiaomiValid = (order: Record<string, any>) => {
       const brand = normalizeText(extractBrandFromOrder(order));
-      if (normalizedBrand === 'ALCATEL') {
-        return brand.includes('ALCATEL');
-      }
-      return brand.includes(normalizedBrand);
+      if (!brand.includes('XIAOMI')) return false;
+
+      const group = normalizeText(extractProductGroupFromOrder(order));
+      const validGroup = group.includes('SMARTPHONE') || group.includes('TELEFONO MOVIL') || group.includes('TABLET') || group.includes('FEATURE PHONE');
+      if (!validGroup) return false;
+
+      const entryType = normalizeText(extractEntryType(order));
+      const warranty = extractWarrantyFromOrder(order);
+      const isIw = warranty === 'Sí' || warranty.toUpperCase() === 'IW' || entryType.includes('IW');
+      return isIw;
     };
 
-    const inferL3Code = (order: Record<string, any>) => {
-      const diagnosisText = normalizeText(`${order?.malfunction || ''} ${order?.fault || ''} ${order?.problem || ''} ${order?.description || ''} ${order?.engineer_notes || ''}`);
-      const hit = CLAIM_MVP_FAULT_MAP.find((row) => diagnosisText.includes(normalizeText(row.source)));
-      return {
-        code: hit?.ispCode || 'MP099-GEN',
-        description: hit?.description || 'Generic malfunction',
-      };
+    const pcbaMappings = [
+      { name: 'redmi 15c', pn: '581K7TLCCG00', goodsId: '37994', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: '25078ra3el', pn: '581K7TLCCG00', goodsId: '37994', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi note 11', pn: '581K7TLCCG00', goodsId: '37994', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi a1', pn: '581C3SLAAG00', goodsId: '38000', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi a2', pn: '581CSL2AAG00', goodsId: '38100', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi note 12 onyx', pn: '5810M7LCCG00', goodsId: '45888', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi note 12 ice blue', pn: '581C3TLCCG00', goodsId: '45780', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi 10a', pn: '581C3L2AAG00', goodsId: '38870', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi 10c', pn: '581C3QLCBG00', goodsId: '38500', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'xiaomi 12t pro', pn: '581L12UEDG00', goodsId: '42591', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi 12', pn: '581M19LCCG00', goodsId: '47996', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'poco x5 pro', pn: '5810M20EDG00', goodsId: '44000', group: 'SMARTPHONE / TELEFONO MOVIL' },
+      { name: 'redmi pad se', pn: '5820M84DCG00', goodsId: '49284', group: 'TABLET' },
+      { name: 'xiaomi pad 6', pn: '5820M82ECG00', goodsId: '49100', group: 'TABLET' },
+      { name: 'qin f21 pro', pn: '581QIN21PRO0', goodsId: '31200', group: 'FEATURE PHONE' },
+    ];
+
+    const inferL3Code = (order: Record<string, any>, group: string) => {
+      const diagnosisText = normalizeText(`${order?.malfunction || ''} ${order?.fault || ''} ${order?.problem || ''} ${order?.description || ''} ${order?.engineer_notes || ''} ${order?.custom_fields?.veredicto || ''} ${order?.veredicto || ''}`);
+      
+      const isTablet = group === 'TABLET';
+      const isFeaturePhone = group === 'FEATURE PHONE';
+
+      if (!isTablet && !isFeaturePhone) {
+        if (diagnosisText.includes('no enciende') || diagnosisText.includes('muerto') || diagnosisText.includes('prende') || diagnosisText.includes('power')) return 'MP00FUN0106';
+        if (diagnosisText.includes('logo') || diagnosisText.includes('bucle') || diagnosisText.includes('bootloop') || diagnosisText.includes('reinicia')) return 'MP00FUN0105';
+        if (diagnosisText.includes('carga') || diagnosisText.includes('puerto') || diagnosisText.includes('pin') || diagnosisText.includes('centro de carga') || diagnosisText.includes('charging')) return 'MP00FUN1801';
+        if (diagnosisText.includes('pantalla') || diagnosisText.includes('touch') || diagnosisText.includes('tactil') || diagnosisText.includes('display') || diagnosisText.includes('lineas') || diagnosisText.includes('rayas')) return 'MP00FUN1101';
+        if (diagnosisText.includes('bateria') || diagnosisText.includes('batería') || diagnosisText.includes('calienta') || diagnosisText.includes('inflada')) return 'MP00COM1102';
+      } else if (isTablet) {
+        if (diagnosisText.includes('lag') || diagnosisText.includes('lento') || diagnosisText.includes('se pega') || diagnosisText.includes('software') || diagnosisText.includes('congelado')) return 'PA00FUN3701';
+        if (diagnosisText.includes('borrosa') || diagnosisText.includes('imagen') || diagnosisText.includes('pantalla borrosa')) return 'PA00FUN0401';
+      } else if (isFeaturePhone) {
+        if (diagnosisText.includes('teclado') || diagnosisText.includes('teclas') || diagnosisText.includes('botones')) return 'MP00FUN0902';
+      }
+      return 'MP00FUN0106';
     };
 
     return ordersData
-      .filter((order) => isWithinCurrentScope(order) && matchesBrand(order))
+      .filter((order) => isWithinCurrentScope(order) && isXiaomiValid(order))
       .filter((order) => {
         const historyHasQa = getOrderHistoryEntries(order).some((entry) => isQaStatus(normalizeText(entry.status)));
         return historyHasQa || isQaStatus(normalizeText(order?.status?.name)) || Boolean(order?.done_at || order?.closed_at || isDispatchStatus(order));
@@ -5386,167 +5412,135 @@ export default function DashboardMultimodular() {
           .find((digits) => digits.length >= 14 && digits.length <= 17);
         const imei = imeiCandidate ? imeiCandidate.slice(0, 15) : '';
 
-        const goodsId = [
+        const modelRaw = normalizeText(extractModelFromOrder(order));
+        let mappedPcba = '';
+        let mappedGoodsId = [
           order?.custom_fields?.goods_id,
           order?.custom_fields?.GoodsID,
           order?.custom_fields?.f3151083,
           order?.custom_fields?.f3147565,
         ].find((value) => typeof value === 'string' && value.trim())?.trim() || '';
+        let mappedGroup = 'SMARTPHONE / TELEFONO MOVIL';
 
-        const saleDate = [
-          order?.custom_fields?.sale_date,
-          order?.custom_fields?.fecha_venta,
-          order?.custom_fields?.f3129959,
-          order?.created_at,
-        ].find((value) => typeof value === 'string' && value.trim()) || '';
+        for (const mapping of pcbaMappings) {
+          if (modelRaw.includes(mapping.name)) {
+            mappedPcba = mapping.pn;
+            mappedGoodsId = mappedGoodsId || mapping.goodsId;
+            mappedGroup = mapping.group;
+            break;
+          }
+        }
 
-        const repairStartOriginal = [
-          order?.custom_fields?.repair_start_time,
-          order?.custom_fields?.Repair_Start_Time,
-          order?.custom_fields?.f3130204,
-        ].find((value) => typeof value === 'string' && value.trim()) || '';
+        const createdAtRaw = order?.created_at;
+        const createTime = new Date(createdAtRaw || Date.now());
+        const closeTimeRaw = order?.closed_at || order?.done_at || createdAtRaw || Date.now();
+        const closeTime = new Date(closeTimeRaw);
 
-        const createdAt = new Date(order?.created_at || '');
-        const generatedRepairStart = !Number.isNaN(createdAt.getTime())
-          ? new Date(createdAt.getTime() + 48 * 60 * 60 * 1000).toISOString()
-          : '';
-        const repairStart = generatedRepairStart || repairStartOriginal;
-        const repairStartDate = repairStart ? new Date(repairStart) : null;
-        const repairFinish = repairStartDate && !Number.isNaN(repairStartDate.getTime())
-          ? new Date(repairStartDate.getTime() + 24 * 60 * 60 * 1000).toISOString()
-          : '';
+        const formatDate = (date: Date) => {
+          if (isNaN(date.getTime())) return '';
+          return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
+        };
+
+        const scExpressReceiptTime = new Date(createTime.getTime() + 15 * 60000);
+        const actualVisitTime = new Date(createTime.getTime());
+        const repairStartTime = new Date(createTime.getTime() + 60 * 60000);
+        const partsApplyTime = new Date(createTime.getTime() + 60 * 60000);
+        const partsArriveTime = new Date(createTime.getTime() + 60 * 60000);
+        const repairFinishTime = new Date(closeTime.getTime() - 30 * 60000);
+        const deliverBackToUserTime = new Date(closeTime.getTime());
 
         const parts = extractProductEntriesFromOrder(order);
-        const hasParts = parts.length > 0 || getPartsCost(order) > 0;
-        const repairContext = normalizeText(`${extractServicesFromOrder(order)} ${parts.map((item) => item.name).join(' | ')} ${order?.description || ''} ${order?.engineer_notes || ''}`);
-        const isMainboardRepair = CLAIM_MAINBOARD_KEYWORDS.some((keyword) => repairContext.includes(keyword));
-        const processingMethodCode = !hasParts ? '3001' : isMainboardRepair ? '5101' : '5001';
-        const l3Match = inferL3Code(order);
-        const l3MalfunctionCode = l3Match.code;
-        const createdAtRaw = String(order?.created_at || '');
-        const saleDateFormatted = formatClaimTemplateDateTime(saleDate);
-        const repairStartFormatted = formatClaimTemplateDateTime(repairStart);
-        const repairFinishFormatted = formatClaimTemplateDateTime(repairFinish);
-        const createdAtFormatted = formatClaimTemplateDateTime(createdAtRaw);
-        const diagnosisText = `${order?.malfunction || ''} ${order?.fault || ''} ${order?.problem || ''} ${order?.description || ''} ${order?.engineer_notes || ''}`.trim();
-        const remark = `${order?.resume || ''} ${order?.manager_notes || ''} ${order?.engineer_notes || ''}`.trim();
-        const serviceType = hasParts ? 'Repair' : 'Inspection';
-        const serviceSubtype = 'On_site_pick_and_repair';
-        const iwOow = extractWarrantyFromOrder(order) === 'Sí' ? 'IW' : 'OOW';
-        const { appearanceDamage, userDamage } = inferDamageFlagsFromOrder(order);
-        const partCodes = parts.map((item) => item.name).slice(0, 10);
-        const newBoardImei = extractMainboardImeiFromOrder(order);
-        const customerEmail = extractCustomerEmailForClaim(order);
+        const veredicto = normalizeText(order?.custom_fields?.veredicto || order?.veredicto || order?.status?.name || '');
+        const isNotaCredito = veredicto.includes('nota de credito') || veredicto.includes('credito') || veredicto.includes('nc');
+        
+        let serviceType = 'Repair';
+        let processingMethodCode = '5001';
+
+        if (isNotaCredito || parts.length === 0) {
+          serviceType = 'Inspection';
+          processingMethodCode = '3001';
+        }
+
+        const l3MalfunctionCode = inferL3Code(order, mappedGroup);
+        const diagnosisText = `${order?.malfunction || ''} ${order?.fault || ''} ${order?.problem || ''} ${order?.description || ''} ${order?.engineer_notes || ''}`.trim() || 'Falla reportada';
 
         const templateRow = Object.fromEntries(
           CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((column) => [column, ''])
         ) as Record<(typeof CLAIM_UPLOAD_TEMPLATE_COLUMNS)[number], string>;
 
-        templateRow.service_order_status = order?.done_at || order?.closed_at || isDispatchStatus(order) ? 'Closed' : 'Open';
-        templateRow.Third_service_order_number = '';
+        templateRow.service_order_status = 'Closed';
         templateRow.operator_service_order_number = order?.number || `OS-${order?.id || 'SN'}`;
-        templateRow.ISP_SC_code = CLAIM_ISP_SC_CODE;
-        templateRow.service_center_code = CLAIM_SERVICE_CENTER_CODE;
-        templateRow.customer_email = customerEmail;
-        templateRow.PO_number = '';
-        templateRow.dealer_name = extractEntryChannel(order);
-        templateRow.customer_type = extractEntryType(order) === 'SIN CLASIFICAR' ? 'RETAILER' : extractEntryType(order).toUpperCase();
+        templateRow.ISP_SC_code = 'GTM00010';
+        templateRow.service_center_code = 'GT-TCW-MSC-Guatemala';
+        templateRow.customer_type = 'RETAILER';
+        templateRow.customer_email = 'recepcion_gt@mi.com';
         templateRow.service_mode = 'Mail_In';
         templateRow.service_type = serviceType;
-        templateRow.Return_type = '';
-        templateRow.Return_warehouse_type = '';
-        templateRow.service_subtype = serviceSubtype;
-        templateRow.IW_OOW = iwOow;
-        templateRow.Appearance_Damage = appearanceDamage;
-        templateRow.Malfunction_Description = l3Match.description;
-        templateRow.invoice_number = '';
-        templateRow.invoice_time = '';
-        templateRow.goods_id = goodsId;
+        templateRow.service_subtype = 'On_site_pick_and_repair';
+        templateRow.IW_OOW = 'IW';
+        templateRow.Appearance_Damage = 'No';
+        templateRow.Malfunction_Description = diagnosisText;
+        templateRow.goods_id = mappedGoodsId;
         templateRow.SN_Or_IMEI1 = imei;
-        templateRow.newSN = '';
-        templateRow.new_IMEI = '';
-        templateRow.Is_user_damange = userDamage;
-        templateRow.create_time = createdAtFormatted;
-        templateRow.SC_express_receipt_time = createdAtFormatted;
-        templateRow.actual_visit_time = createdAtFormatted;
-        templateRow.repair_start_time = repairStartFormatted;
-        templateRow.parts_apply_time = '';
-        templateRow.parts_arrive_time = '';
-        templateRow.material_shortage_time = '';
-        templateRow.repair_finish_time = repairFinishFormatted;
-        templateRow.deliver_back_to_user_time = repairFinishFormatted;
-        templateRow.close_time = repairFinishFormatted;
-        templateRow.receive_AWB = '';
-        templateRow.delivery_AWB = '';
+        templateRow.Is_user_damange = 'No';
+        templateRow.create_time = formatDate(createTime);
+        templateRow.SC_express_receipt_time = formatDate(scExpressReceiptTime);
+        templateRow.actual_visit_time = formatDate(actualVisitTime);
+        templateRow.repair_start_time = formatDate(repairStartTime);
+        templateRow.parts_apply_time = formatDate(partsApplyTime);
+        templateRow.parts_arrive_time = formatDate(partsArriveTime);
+        templateRow.repair_finish_time = formatDate(repairFinishTime);
+        templateRow.deliver_back_to_user_time = formatDate(deliverBackToUserTime);
+        templateRow.close_time = formatDate(closeTime);
         templateRow.Level_3_malfunction_code = l3MalfunctionCode;
         templateRow.processing_method_code = processingMethodCode;
-        templateRow.Activity_Project = selectedClaimGeneratorBrand;
-        templateRow.remark = remark;
-        templateRow.defect_description = l3Match.description;
-        templateRow.Goodid = goodsId;
-        templateRow.B2B = extractSedeFromOrder(order).includes('MEXICO') ? 'MX' : 'GT';
+        templateRow.remark = 'Garantia Cobrada';
+        templateRow.defect_description = diagnosisText;
 
-        if (serviceType === 'Repair' && partCodes.length > 0) {
-          templateRow.old_PN1 = partCodes[0];
-          templateRow.new_PN1 = partCodes[0];
-        }
-
-        if (processingMethodCode === '5101') {
-          templateRow.old_SN1 = imei;
-          templateRow.old_IMEI1 = imei;
-          templateRow.new_SN1 = newBoardImei;
-          templateRow.new_IMEI1 = newBoardImei;
-        }
-
-        partCodes.forEach((partCode, index) => {
-          const partPosition = index + 1;
-          const newPnKey = `new_PN${partPosition}` as keyof typeof templateRow;
-          templateRow[newPnKey] = partCode;
-
-          if (partPosition <= 10) {
-            const oldSnKey = `old_SN${partPosition}` as keyof typeof templateRow;
-            const oldImeiKey = `old_IMEI${partPosition}` as keyof typeof templateRow;
-            const newSnKey = `new_SN${partPosition}` as keyof typeof templateRow;
-            const newImeiKey = `new_IMEI${partPosition}` as keyof typeof templateRow;
-            templateRow[oldSnKey] = '';
-            templateRow[oldImeiKey] = '';
-            templateRow[newSnKey] = '';
-            templateRow[newImeiKey] = '';
+        if (serviceType === 'Repair') {
+          templateRow.old_PN1 = mappedPcba || parts[0]?.name || '';
+          templateRow.new_PN1 = mappedPcba || parts[0]?.name || '';
+          templateRow.old_SN1_Or_IMEI1 = '56000000000';
+          templateRow.new_SN1_Or_IMEI1 = '56000000000';
+          
+          if (parts.length > 1) {
+            templateRow.old_PN2 = parts[1]?.name || '';
+            templateRow.new_PN2 = parts[1]?.name || '';
           }
-        });
+          if (parts.length > 2) {
+            templateRow.old_PN3 = parts[2]?.name || '';
+            templateRow.new_PN3 = parts[2]?.name || '';
+          }
+        }
 
         const missingFields = [
           imei ? null : 'IMEI_SN',
-          goodsId ? null : 'GoodsID',
-          saleDate ? null : 'Sale_Date',
         ].filter((value): value is string => Boolean(value));
 
         return {
           os: order?.number || `OS-${order?.id || 'SN'}`,
           model: extractModelFromOrder(order),
-          category: normalizeText(extractProductGroupFromOrder(order)).includes('TABLET') ? 'Tablet' : 'Smartphone',
+          category: mappedGroup.includes('TABLET') ? 'Tablet' : 'Smartphone',
           imei,
-          goodsId,
-          saleDate,
-          repairStart,
+          goodsId: mappedGoodsId,
+          saleDate: '',
+          repairStart: formatDate(repairStartTime),
           processingMethodCode,
           l3MalfunctionCode,
           spareParts: parts.map((item) => item.name).join(' | ') || 'Sin repuestos',
-          ispScCode: CLAIM_ISP_SC_CODE,
+          ispScCode: 'GTM00010',
           missingFields,
-          autoFilledRepairStart: Boolean(repairStart),
+          autoFilledRepairStart: true,
           autoDetectedL1: processingMethodCode === '3001',
-          autoDetectedL3: l3MalfunctionCode === 'MP099-GEN',
+          autoDetectedL3: true,
           templateRow,
         };
       });
   }, [
     isCustomMonthRangeActive,
     ordersData,
-    selectedClaimGeneratorBrand,
     selectedDateRange,
     selectedEndMonth,
-    selectedClaimGeneratorBrand,
     selectedSede,
     selectedStartMonth,
   ]);
@@ -6019,8 +6013,7 @@ export default function DashboardMultimodular() {
           <Tab className={canSeeArea('Taller') ? '' : 'hidden'} icon={Settings}>🔧 Taller</Tab>
           <Tab className={canSeeArea('Bodega') ? '' : 'hidden'} icon={Package}>📦 Bodega</Tab>
           <Tab className={canSeeAnyArea('Calidad', 'QA') ? '' : 'hidden'} icon={ShieldCheck}>✅ Calidad</Tab>
-          <Tab className={canSeeArea('Claims') ? '' : 'hidden'} icon={CreditCard}>💰 Claims</Tab>
-          <Tab className={canSeeAnyArea('Subir Claims', 'Claims') ? '' : 'hidden'} icon={TrendingUp}>📤 Subir Claims</Tab>
+          <Tab className={canSeeArea('ERP Xiaomi') ? '' : 'hidden'} icon={CreditCard}>⚙️ ERP Xiaomi</Tab>
           <Tab className={canSeeAnyArea('Bono Técnico', 'Taller') ? '' : 'hidden'} icon={Activity}>🏅 Bono Técnico</Tab>
         </TabList>
         <div className="flex justify-end px-4 pb-2">
@@ -7911,568 +7904,11 @@ export default function DashboardMultimodular() {
              </Card>
           </TabPanel>
 
-          {/* --- PESTAÑA 6: CLAIMS --- */}
-          <TabPanel className={canSeeArea('Claims') ? '' : 'hidden'}>
-             <Grid numItemsSm={1} numItemsLg={4} className="gap-6 mb-8">
-                <Card decoration="top" decorationColor="blue">
-                   <Text className="text-slate-500 uppercase text-xs">CASOS CERRADOS XIAOMI</Text>
-                   <Metric>{claimsSummary.total}</Metric>
-                   <Text className="text-xs text-slate-500 mt-2">Teléfonos cerrados en el período</Text>
-                </Card>
-                <Card decoration="top" decorationColor="emerald">
-                   <Text className="text-slate-500 uppercase text-xs">CERRADOS EN PORTAL</Text>
-                   <Metric>{claimsSummary.closedInPortal}</Metric>
-                   <ProgressBar value={claimsSummary.coverage} color="emerald" className="mt-4" />
-                </Card>
-                <Card decoration="top" decorationColor="amber">
-                   <Text className="text-slate-500 uppercase text-xs">REPORTADOS / PENDIENTES</Text>
-                   <Metric>{claimsSummary.reported} / {claimsSummary.pending}</Metric>
-                   <Badge color="amber" className="mt-2">Seguimiento Xiaomi</Badge>
-                </Card>
-                <Card decoration="top" decorationColor="rose">
-                   <Text className="text-slate-500 uppercase text-xs">COBERTURA DE VALIDACIÓN</Text>
-                   <Metric>{claimsSummary.coverage}%</Metric>
-                   <Badge color="rose" className="mt-2">NC: {claimsSummary.noteCredit}</Badge>
-                </Card>
-             </Grid>
-
-             <Grid numItemsLg={2} className="gap-6 mb-6">
-                <Card>
-                   <Title>Validador Xiaomi por IMEI / Serie</Title>
-                {/* Reingresos a QA */}
-                <Card className="mt-6">
-                  <Title>Órdenes que Reingresan a Control de Calidad (Post-Despacho)</Title>
-                  <Text className="mt-2 text-xs text-slate-500">Órdenes que volvieron a entrar en QA después de haber sido despachadas. Validar timelines y causas.</Text>
-                  <div className="mt-4 overflow-x-auto">
-                    <table className="min-w-full border border-slate-200 text-sm">
-                      <thead className="bg-slate-100">
-                        <tr>
-                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
-                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Equipo</th>
-                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Técnico</th>
-                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Tipo de Caso</th>
-                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado Actual</th>
-                          <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">TAT Total (días)</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {qaOperationalMetrics.topQaAgingRows.filter((row) => didOrderReentryQaAfterDispatch({ status: { name: row.status } })).length ? (
-                          qaOperationalMetrics.topQaAgingRows
-                            .filter((row) => didOrderReentryQaAfterDispatch({ status: { name: row.status } }))
-                            .slice(0, 20)
-                            .map((row, idx) => (
-                              <tr key={`${row.number}-reentry-${idx}`} className="bg-white even:bg-slate-50">
-                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{row.number}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.equipment}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.technician}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-slate-700">
-                                  <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${row.caseType === 'reparado' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
-                                    {row.caseType === 'reparado' ? 'Reparado' : 'No-Reparado'}
-                                  </span>
-                                </td>
-                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.status}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-right font-semibold text-rose-700">{row.qaDays.toFixed(2)}</td>
-                              </tr>
-                            ))
-                        ) : (
-                          <tr className="bg-white">
-                            <td colSpan={6} className="border border-slate-200 px-3 py-6 text-center text-slate-500">Sin reingresos a QA en el período filtrado.</td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </Card>
-                   <Text className="mt-2 text-sm text-slate-600">
-                     Pegue aquí el listado copiado o exportado desde la plataforma Xiaomi. El panel marcará automáticamente qué OS ya fueron cargadas.
-                   </Text>
-                   <textarea
-                     value={xiaomiRegistryInput}
-                     onChange={(event) => setXiaomiRegistryInput(event.target.value)}
-                     placeholder="Pegue IMEI, series o filas completas del portal Xiaomi..."
-                     className="mt-4 h-40 w-full rounded-lg border border-slate-200 p-3 text-sm text-slate-700 outline-none focus:border-blue-500"
-                   />
-                   <Flex className="mt-4">
-                     <Badge color="blue">Series detectadas: {claimsRegistryTokens.length}</Badge>
-                     <Badge color={xiaomiRegistryInput.trim() ? 'emerald' : 'amber'}>
-                       {xiaomiRegistryInput.trim() ? 'Comparador activo' : 'Esperando lista del portal'}
-                     </Badge>
-                   </Flex>
-                </Card>
-                <Card>
-                   <Title>Distribución de validación</Title>
-                   {claimsStatusChartData.some((item) => item.casos > 0) ? (
-                     <DonutChart
-                       className="mt-6 h-72"
-                       data={claimsStatusChartData}
-                       category="casos"
-                       index="name"
-                       colors={["emerald", "blue", "amber", "slate"]}
-                       valueFormatter={(value) => `${value} casos`}
-                     />
-                   ) : (
-                     <Text className="mt-8 text-sm text-slate-500">Aún no hay casos Xiaomi cerrados para el período seleccionado.</Text>
-                   )}
-                </Card>
-             </Grid>
-
-             <Grid numItemsLg={2} className="gap-6 mb-6">
-                <Card>
-                   <Title>Tendencia mensual: cargados vs pendientes</Title>
-                   {claimsTrendData.length ? (
-                     <LineChart
-                       className="mt-6 h-72"
-                       data={claimsTrendData}
-                       index="month"
-                       categories={["Cargados", "Pendientes"]}
-                       colors={["emerald", "amber"]}
-                     />
-                   ) : (
-                     <Text className="mt-8 text-sm text-slate-500">Sin datos suficientes para tendencia mensual.</Text>
-                   )}
-                </Card>
-                <Card>
-                   <Title>Foco operativo</Title>
-                   <div className="mt-6 space-y-4">
-                     <div>
-                       <Text className="text-xs uppercase text-slate-500">Sin serie</Text>
-                       <Metric>{claimsSummary.missingSeries}</Metric>
-                     </div>
-                     <div>
-                       <Text className="text-xs uppercase text-slate-500">Reportados en Xiaomi</Text>
-                       <Metric>{claimsSummary.reported}</Metric>
-                     </div>
-                     <div>
-                       <Text className="text-xs uppercase text-slate-500">Pendientes por cargar</Text>
-                       <Metric>{claimsSummary.pending}</Metric>
-                     </div>
-                     <div>
-                       <Text className="text-xs uppercase text-slate-500">Notas de crédito</Text>
-                       <Metric>{claimsSummary.noteCredit}</Metric>
-                     </div>
-                   </div>
-                </Card>
-             </Grid>
-
-             <Card>
-               <Flex className="mb-4 flex-wrap gap-3">
-                 <div>
-                   <Title>Detalle de validación Xiaomi</Title>
-                   <Text className="text-sm text-slate-500">Casos cerrados de teléfono comparados contra el listado pegado del portal.</Text>
-                 </div>
-                 <div className="flex flex-wrap gap-2">
-                   <Select value={selectedClaimsStatus} onValueChange={setSelectedClaimsStatus}>
-                     <SelectItem value="ALL">Todos</SelectItem>
-                     <SelectItem value="CERRADO">Cerrados en portal</SelectItem>
-                     <SelectItem value="REPORTADO">Reportados</SelectItem>
-                     <SelectItem value="PENDIENTE">Pendientes</SelectItem>
-                     <SelectItem value="SIN_SERIE">Sin serie</SelectItem>
-                   </Select>
-                   <input
-                     value={claimsSearch}
-                     onChange={(event) => setClaimsSearch(event.target.value)}
-                     placeholder="Buscar OS, modelo o IMEI"
-                     className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500"
-                   />
-                 </div>
-               </Flex>
-
-               <div className="overflow-x-auto">
-                 <table className="min-w-full border border-slate-200 text-sm">
-                   <thead className="bg-slate-50">
-                     <tr>
-                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
-                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Cierre</th>
-                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Modelo</th>
-                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Serie / IMEI</th>
-                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Canal</th>
-                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Match portal</th>
-                       <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado</th>
-                     </tr>
-                   </thead>
-                   <tbody>
-                     {claimsFilteredRows.length ? claimsFilteredRows.map((row) => (
-                       <tr key={`${row.os}-${row.series}`} className="odd:bg-white even:bg-slate-50/60">
-                         <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.os}</td>
-                         <td className="border border-slate-200 px-3 py-2">{row.closedAt}</td>
-                         <td className="border border-slate-200 px-3 py-2">{row.model}</td>
-                         <td className="border border-slate-200 px-3 py-2">{row.series}</td>
-                         <td className="border border-slate-200 px-3 py-2">{row.channel}</td>
-                         <td className="border border-slate-200 px-3 py-2">{row.portalMatch}</td>
-                         <td className="border border-slate-200 px-3 py-2">
-                           <Badge color={row.validationStatus === 'Cerrado en portal' ? 'emerald' : row.validationStatus === 'Reportado en Xiaomi' ? 'blue' : row.validationStatus === 'Pendiente de carga' ? 'amber' : 'slate'}>
-                             {row.validationStatus}
-                           </Badge>
-                         </td>
-                       </tr>
-                     )) : (
-                       <tr>
-                         <td colSpan={7} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
-                           No hay coincidencias para los filtros actuales.
-                         </td>
-                       </tr>
-                     )}
-                   </tbody>
-                 </table>
-               </div>
-             </Card>
-          </TabPanel>
-
-          {/* --- PESTAÑA 7: SUBIR CLAIMS --- */}
-          <TabPanel className={canSeeAnyArea('Subir Claims', 'Claims') ? '' : 'hidden'}>
-            <Card className="mb-6">
-              <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
-                <div>
-                  <Title>Generador de Claims · MVP</Title>
-                  <Text className="mt-1 text-xs text-slate-500">Embudo operativo: filtro de marca/estado, semáforo, traductor de códigos y plantilla final para carga en portal ISP.</Text>
-                </div>
-                <Flex className="gap-2 flex-wrap">
-                  <Select value={selectedClaimGeneratorBrand} onValueChange={(value) => setSelectedClaimGeneratorBrand(value as 'XIAOMI' | 'TCL' | 'ALCATEL')} className="w-[170px]">
-                    <SelectItem value="XIAOMI">Xiaomi</SelectItem>
-                    <SelectItem value="TCL">TCL</SelectItem>
-                    <SelectItem value="ALCATEL">Alcatel</SelectItem>
-                  </Select>
-                  <button
-                    type="button"
-                    onClick={handleDownloadClaimsTemplate}
-                    className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                  >
-                    Descargar template {claimsTemplateDownloadRows.length ? '(con datos)' : '(vacío)'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDownloadClaimsTemplateEmpty}
-                    className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50"
-                  >
-                    Descargar solo encabezados
-                  </button>
-                  <Badge color="amber">Filas para exportar: {claimsTemplateDownloadRows.length}</Badge>
-                  <Badge color="indigo">Template: {claimsGeneratorConfig.template}</Badge>
-                  <Badge color="blue">Lógica: {claimsGeneratorConfig.codingLogic}</Badge>
-                  <Badge color="emerald">Columnas: {CLAIM_UPLOAD_TEMPLATE_COLUMNS.length}</Badge>
-                </Flex>
-              </Flex>
-            </Card>
-
-            <Grid numItemsSm={1} numItemsLg={4} className="gap-6 mb-6">
-              <Card decoration="top" decorationColor="blue">
-                <Text className="text-slate-500 uppercase text-xs">Órdenes candidatas</Text>
-                <Metric>{claimsGeneratorSummary.total}</Metric>
-                <Text className="mt-2 text-xs text-slate-500">Marca + estado de QA/Control en período activo</Text>
-              </Card>
-              <Card decoration="top" decorationColor="emerald">
-                <Text className="text-slate-500 uppercase text-xs">Semáforo verde</Text>
-                <Metric>{claimsGeneratorSummary.validRows}</Metric>
-                <ProgressBar
-                  className="mt-4"
-                  value={claimsGeneratorSummary.total ? (claimsGeneratorSummary.validRows / claimsGeneratorSummary.total) * 100 : 0}
-                  color="emerald"
-                />
-              </Card>
-              <Card decoration="top" decorationColor="rose">
-                <Text className="text-slate-500 uppercase text-xs">Semáforo rojo</Text>
-                <Metric>{claimsGeneratorSummary.incompleteRows}</Metric>
-                <Text className="mt-2 text-xs text-rose-600">Registros con faltantes críticos</Text>
-              </Card>
-              <Card decoration="top" decorationColor="amber">
-                <Text className="text-slate-500 uppercase text-xs">Reglas auto aplicadas</Text>
-                <Metric>{claimsGeneratorSummary.autoFilledRepairStart + claimsGeneratorSummary.autoDetectedL1 + claimsGeneratorSummary.autoDetectedL3Fallback}</Metric>
-                <Text className="mt-2 text-xs text-slate-500">Repair start + método + L3 fallback</Text>
-              </Card>
-            </Grid>
-
-            <TabGroup>
-              <TabList variant="solid" className="mb-4">
-                <Tab>① Semáforo</Tab>
-                <Tab>② Traductor</Tab>
-                <Tab>③ Reglas Auto</Tab>
-                <Tab>④ Template 68</Tab>
-              </TabList>
-
-              <TabPanels>
-                <TabPanel>
-                  <Grid numItemsLg={2} className="gap-6">
-                    <Card>
-                      <Title>Validación de campos críticos</Title>
-                      <Text className="mt-1 text-xs text-slate-500">Verde: completo. Rojo: faltan IMEI, GoodsID o fecha de venta.</Text>
-                      <div className="mt-4 overflow-x-auto">
-                        <table className="min-w-full border border-slate-200 text-sm">
-                          <thead className="bg-slate-100">
-                            <tr>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Campo faltante</th>
-                              <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">Casos</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {claimsGeneratorSummary.missingByField.length ? claimsGeneratorSummary.missingByField.map((row) => (
-                              <tr key={row.field} className="bg-white even:bg-slate-50">
-                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.field}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-right text-rose-700 font-semibold">{row.count}</td>
-                              </tr>
-                            )) : (
-                              <tr className="bg-white">
-                                <td colSpan={2} className="border border-slate-200 px-3 py-6 text-center text-emerald-700">Todos los registros cumplen campos críticos.</td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </Card>
-                    <Card>
-                      <Title>Muestra de órdenes para carga</Title>
-                      <Text className="mt-1 text-xs text-slate-500">Estado por orden previo a exportación.</Text>
-                      <div className="mt-4 overflow-x-auto max-h-[360px]">
-                        <table className="min-w-full border border-slate-200 text-sm">
-                          <thead className="bg-slate-100 sticky top-0">
-                            <tr>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Modelo</th>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Semáforo</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {claimsGeneratorRows.slice(0, 20).map((row) => (
-                              <tr key={`${row.os}-${row.imei || 'na'}`} className="bg-white even:bg-slate-50">
-                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.os}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.model}</td>
-                                <td className="border border-slate-200 px-3 py-2">
-                                  <Badge color={row.missingFields.length ? 'rose' : 'emerald'}>
-                                    {row.missingFields.length ? `Rojo · faltan ${row.missingFields.join(', ')}` : 'Verde · listo'}
-                                  </Badge>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </Card>
-                  </Grid>
-                </TabPanel>
-
-                <TabPanel>
-                  <Card>
-                    <Title>Tabla maestra de mapeo (Español → ISP)</Title>
-                    <Text className="mt-1 text-xs text-slate-500">Top 10 mapeos operativos más frecuentes para normalizar diagnóstico hacia código ISP.</Text>
-                    <div className="mt-4 overflow-x-auto">
-                      <table className="min-w-full border border-slate-200 text-sm">
-                        <thead className="bg-slate-100">
-                          <tr>
-                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Descripción Orderry</th>
-                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Código ISP</th>
-                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Categoría</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {CLAIM_MVP_FAULT_MAP.map((row, index) => (
-                            <tr key={`${row.ispCode}-${row.source}-${index}`} className="bg-white even:bg-slate-50">
-                              <td className="border border-slate-200 px-3 py-2">{row.source}</td>
-                              <td className="border border-slate-200 px-3 py-2 font-semibold text-blue-700">{row.ispCode}</td>
-                              <td className="border border-slate-200 px-3 py-2">{row.category}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </Card>
-                </TabPanel>
-
-                <TabPanel>
-                  <Grid numItemsLg={2} className="gap-6">
-                    <Card>
-                      <Title>Reglas automáticas activas</Title>
-                      <div className="mt-4 space-y-3">
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                          <Text className="text-sm font-semibold text-slate-800">1) Tiempos SLA (TAT Xiaomi)</Text>
-                          <Text className="text-xs text-slate-600 mt-1">Repair_Start = Create + 48h; Repair_Finish y Close = Repair_Start + 24h.</Text>
-                          <Badge color="blue" className="mt-2">Aplicadas: {claimsGeneratorSummary.autoFilledRepairStart}</Badge>
-                        </div>
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                          <Text className="text-sm font-semibold text-slate-800">2) Processing_method_code faltante</Text>
-                          <Text className="text-xs text-slate-600 mt-1">Sin repuestos = 3001; con repuestos = 5001; mainboard = 5101.</Text>
-                          <Badge color="indigo" className="mt-2">Inspección (3001): {claimsGeneratorSummary.autoDetectedL1}</Badge>
-                        </div>
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                          <Text className="text-sm font-semibold text-slate-800">3) Level_3_malfunction_code faltante</Text>
-                          <Text className="text-xs text-slate-600 mt-1">Se infiere por palabras clave del diagnóstico técnico.</Text>
-                          <Badge color="amber" className="mt-2">Fallback MP099: {claimsGeneratorSummary.autoDetectedL3Fallback}</Badge>
-                        </div>
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                          <Text className="text-sm font-semibold text-slate-800">4) Constantes obligatorias</Text>
-                          <Text className="text-xs text-slate-600 mt-1">Se inyectan ISP_SC_code, service_center_code, service_mode y customer_email default.</Text>
-                          <Badge color="emerald" className="mt-2">ISP_SC_code = GTM00010</Badge>
-                        </div>
-                      </div>
-                    </Card>
-
-                    <Card>
-                      <Title>Preview transformado por orden</Title>
-                      <Text className="mt-1 text-xs text-slate-500">Vista simplificada del resultado que alimenta el archivo de subida.</Text>
-                      <div className="mt-4 overflow-x-auto max-h-[430px]">
-                        <table className="min-w-full border border-slate-200 text-sm">
-                          <thead className="bg-slate-100 sticky top-0">
-                            <tr>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">OS</th>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">IMEI/SN</th>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Método</th>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">L3 Code</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {claimsGeneratorRows.slice(0, 25).map((row) => (
-                              <tr key={`${row.os}-${row.l3MalfunctionCode}`} className="bg-white even:bg-slate-50">
-                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.os}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.imei || 'Sin IMEI'}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-slate-700">{row.processingMethodCode}</td>
-                                <td className="border border-slate-200 px-3 py-2 text-blue-700 font-semibold">{row.l3MalfunctionCode}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </Card>
-                  </Grid>
-                </TabPanel>
-
-                <TabPanel>
-                  <Grid numItemsLg={2} className="gap-6">
-                    <Card>
-                      <Title>Columnas exactas del template</Title>
-                      <Text className="mt-1 text-xs text-slate-500">Este bloque ya usa los encabezados reales que compartiste para la carga ISP.</Text>
-                      <div className="mt-4 overflow-x-auto">
-                        <table className="min-w-full border border-slate-200 text-sm">
-                          <thead className="bg-slate-100">
-                            <tr>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Campo</th>
-                              <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((field) => (
-                              <tr key={field} className="bg-white even:bg-slate-50">
-                                <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{field}</td>
-                                <td className="border border-slate-200 px-3 py-2">
-                                  <Badge color={CLAIM_TEMPLATE_CRITICAL_FIELDS.includes(field as typeof CLAIM_TEMPLATE_CRITICAL_FIELDS[number]) ? 'amber' : 'emerald'}>
-                                    {CLAIM_TEMPLATE_CRITICAL_FIELDS.includes(field as typeof CLAIM_TEMPLATE_CRITICAL_FIELDS[number]) ? 'Crítico / validar' : 'Mapeado o vacío controlado'}
-                                  </Badge>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      <div className="mt-4 flex gap-2 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={handleDownloadClaimsTemplate}
-                          className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                        >
-                          Descargar template CSV (con datos)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleDownloadClaimsTemplateEmpty}
-                          className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50"
-                        >
-                          Descargar template vacío
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-                              navigator.clipboard.writeText(claimsPythonPrompt);
-                            }
-                          }}
-                          className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-                        >
-                          Copiar prompt Python
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-                              navigator.clipboard.writeText(XIAOMI_CLASSIFICATION_PROMPTS.base);
-                            }
-                          }}
-                          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                        >
-                          Copiar prompt Base (JSON)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-                              navigator.clipboard.writeText(XIAOMI_CLASSIFICATION_PROMPTS.business);
-                            }
-                          }}
-                          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                        >
-                          Copiar prompt Negocio
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-                              navigator.clipboard.writeText(XIAOMI_CLASSIFICATION_PROMPTS.confidence);
-                            }
-                          }}
-                          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                        >
-                          Copiar prompt Confianza
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-                              navigator.clipboard.writeText(XIAOMI_CLASSIFICATION_PROMPTS.production);
-                            }
-                          }}
-                          className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                        >
-                          Copiar prompt Producción
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (typeof window !== 'undefined') {
-                              window.alert('Siguiente paso: ejecutar el script Python con tus 3 archivos reales para generar el .xlsx/.csv de carga ISP.');
-                            }
-                          }}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                        >
-                          Generar script Python completo
-                        </button>
-                      </div>
-                    </Card>
-
-                    <Card>
-                      <Title>Preview del template con datos</Title>
-                      <Text className="mt-1 text-xs text-slate-500">Se muestran las primeras órdenes ya preparadas con tus encabezados reales. Puedes desplazarte horizontalmente para ver todo el layout.</Text>
-                      <div className="mt-4 overflow-x-auto max-h-[520px] rounded-xl border border-slate-200">
-                        <table className="min-w-full text-xs">
-                          <thead className="bg-slate-100 sticky top-0">
-                            <tr>
-                              {CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((column) => (
-                                <th key={column} className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700 whitespace-nowrap">{column}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {claimsTemplateDownloadRows.slice(0, 5).map((row, index) => (
-                              <tr key={`template-row-${index}`} className="bg-white even:bg-slate-50">
-                                {CLAIM_UPLOAD_TEMPLATE_COLUMNS.map((column) => (
-                                  <td key={`${index}-${column}`} className="border border-slate-200 px-3 py-2 text-slate-700 whitespace-nowrap">{row[column] || ''}</td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </Card>
-                  </Grid>
-                </TabPanel>
-              </TabPanels>
-            </TabGroup>
+          {/* ─── PESTAÑA NUEVA: ERP XIAOMI ─────────────────────── */}
+          <TabPanel className={canSeeArea('ERP Xiaomi') ? '' : 'hidden'}>
+            <div className="-m-6">
+              <ClaimsXiaomiModule ordersData={ordersData} />
+            </div>
           </TabPanel>
 
           {/* ─── PESTAÑA 8: MÓDULO DE BONO TÉCNICO ─────────────────────── */}

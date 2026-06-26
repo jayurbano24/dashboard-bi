@@ -3,7 +3,7 @@ import { createClient as createAdminClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 
 const VALID_ROLES = ['admin', 'supervisor', 'despacho', 'viewer'] as const;
-const VALID_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'Claims', 'Subir Claims', 'Bono Técnico', 'Despacho'] as const;
+const VALID_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'ERP Xiaomi', 'Bono Técnico', 'Despacho'] as const;
 
 async function assertAdmin() {
   const supabase = await createClient();

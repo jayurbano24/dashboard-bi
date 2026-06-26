@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { NextResponse } from 'next/server';
 
-const VALID_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'Claims', 'Subir Claims', 'Bono Técnico', 'Despacho'] as const;
+const VALID_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'ERP Xiaomi', 'Bono Técnico', 'Despacho'] as const;
 
 // Verifica que quien llama es admin
 async function assertAdmin() {

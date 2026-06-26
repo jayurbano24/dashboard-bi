@@ -22,7 +22,7 @@ const ROLE_LABELS: Record<string, { label: string; color: string }> = {
 };
 
 const ALL_ROLES = ['admin', 'supervisor', 'despacho', 'viewer'] as const;
-const ALL_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'Claims', 'Subir Claims', 'Bono Técnico', 'Despacho'] as const;
+const ALL_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'ERP Xiaomi', 'Bono Técnico', 'Despacho'] as const;
 
 type AccessRow = {
   id: string;

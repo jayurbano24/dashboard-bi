@@ -46,6 +46,10 @@ next-env.d.ts
 .vercel
 .env*.local
 
+# Orderry API response dumps (debug / data, possible PII)
+/ops*.json
+/order.json
+
 # ISP scraper artifacts (secrets / debug)
 scripts/.isp_auth_state.json
 scripts/_isp_debug.html
