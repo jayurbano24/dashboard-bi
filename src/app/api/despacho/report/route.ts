@@ -47,7 +47,7 @@ export async function GET(request: Request) {
         const exporter = new ExcelExporter();
         const buffer = exporter.exportToBuffer(finalReport);
         
-        return new Response(buffer, {
+        return new Response(buffer as any, {
           headers: {
             'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'Content-Disposition': `attachment; filename="Reporte_CLARO_MENSUAL_${new Date().toISOString().slice(0, 10)}.xlsx"`,

@@ -20,7 +20,6 @@ import {
   Filter,
   ArrowLeft,
 } from 'lucide-react';
-import { SapModule } from './sap/SapModule';
 
 // ─── CATÁLOGOS ────────────────────────────────────────────────────────────────
 
@@ -254,8 +253,24 @@ export default function DespachoPagina() {
   const [reportRegion, setReportRegion] = useState<'TODOS' | 'GAM' | 'NO GAM'>('TODOS');
   const [reportRows, setReportRows] = useState<any[]>([]);
   const [reportLoading, setReportLoading] = useState(false);
-  const [reportCurrentPage, setReportCurrentPage] = useState(1);
-  const reportRowsPerPage = 25;
+
+  // --- SAP Equipment States ---
+  const [sapImei, setSapImei] = useState('');
+  const [sapAgencia, setSapAgencia] = useState('');
+  const [sapDocumento, setSapDocumento] = useState('');
+  const [sapMarca, setSapMarca] = useState('');
+  const [sapModelo, setSapModelo] = useState('');
+  const [sapGuia, setSapGuia] = useState('');
+  const [sapDia, setSapDia] = useState(new Date().toISOString().slice(0, 10));
+  const [sapComentario, setSapComentario] = useState('ACEPTADO');
+  const [sapLoading, setSapLoading] = useState(false);
+  const [sapMessage, setSapMessage] = useState({ text: '', type: '' });
+  const [sapBatchList, setSapBatchList] = useState<any[]>([]);
+  const [sapHistoryList, setSapHistoryList] = useState<any[]>([]);
+  const [sapHistorySearch, setSapHistorySearch] = useState('');
+  const [sapHistoryLoading, setSapHistoryLoading] = useState(false);
+  const [sapHistoryStartDate, setSapHistoryStartDate] = useState('');
+  const [sapHistoryEndDate, setSapHistoryEndDate] = useState('');
 
   // Formulario conduce
   const [conduceNum, setConduceNum] = useState('TCSAL-0043');
@@ -365,7 +380,6 @@ export default function DespachoPagina() {
       const data = await res.json();
       if (data.ok && Array.isArray(data.rows)) {
         setReportRows(data.rows);
-        setReportCurrentPage(1);
       } else {
         showNotification(data.error || 'Error al cargar reporte.', 'error');
       }
@@ -392,20 +406,171 @@ export default function DespachoPagina() {
     if (reportDoa !== 'ALL') params.append('doa', reportDoa);
     if (reportTemplate) params.append('template', reportTemplate);
     if (reportRegion) params.append('region', reportRegion);
-    
-    if (reportTemplate === 'PLANTILLA_CLARO_MENSUAL') {
-      params.append('format', 'xlsx');
-    } else {
-      params.append('format', 'csv');
+    params.append('format', 'csv');
+
+    // Abre el endpoint de descarga directamente para que el navegador maneje la descarga del archivo CSV con el nombre correcto
+    window.open(`/api/despacho/report?${params.toString()}`, '_blank');
+  };
+
+  const loadSapHistory = async () => {
+    setSapHistoryLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (sapHistoryStartDate) params.append('startDate', sapHistoryStartDate);
+      if (sapHistoryEndDate) params.append('endDate', sapHistoryEndDate);
+      if (sapHistorySearch) params.append('searchTerm', sapHistorySearch);
+
+      const res = await fetch(`/api/despacho/sap?${params.toString()}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.rows)) {
+        setSapHistoryList(data.rows);
+      } else {
+        showNotification(data.error || 'Error al cargar historial SAP.', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Error de red al cargar historial SAP.', 'error');
+    } finally {
+      setSapHistoryLoading(false);
+    }
+  };
+
+  const handleLookupSapImei = async (imei: string) => {
+    const clean = imei.trim();
+    if (!clean) return;
+    setSapLoading(true);
+    setSapMessage({ text: 'Buscando en Orderry...', type: 'info' });
+
+    try {
+      const result = await lookupImei(clean);
+      if (result.found) {
+        setSapMessage({ text: `✓ Encontrado: ${result.marca} ${result.modelo} (Estatus: ${result.rawStatus || result.estadoGanado})`, type: 'success' });
+        setSapMarca(result.marca || '');
+        setSapModelo(result.modelo || '');
+        setSapAgencia(result.canalIngreso && result.canalIngreso !== 'N/A' ? result.canalIngreso : '');
+        setSapDocumento(result.ordenNumero || '');
+        setSapGuia(result.ordenNumero || '');
+      } else {
+        setSapMessage({ text: '🚫 IMEI no encontrado en Orderry. Debe haber pasado por el sistema.', type: 'error' });
+        setSapMarca('');
+        setSapModelo('');
+        setSapAgencia('');
+        setSapDocumento('');
+        setSapGuia('');
+      }
+    } catch (err: any) {
+      setSapMessage({ text: `Error: ${err.message}`, type: 'error' });
+    } finally {
+      setSapLoading(false);
+    }
+  };
+
+  const addSapToBatch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sapImei.trim()) { showNotification('Ingrese el IMEI.', 'error'); return; }
+    if (!sapMarca || !sapModelo) { showNotification('El equipo debe validarse en Orderry antes de agregar.', 'error'); return; }
+
+    const item = {
+      agencia: sapAgencia.trim() || 'Sin Agencia',
+      imeiFisico: sapImei.trim(),
+      noDocumento: sapDocumento.trim() || 'N/A',
+      marca: sapMarca.trim(),
+      modelo: sapModelo.trim(),
+      guia: sapGuia.trim() || 'N/A',
+      dia: sapDia,
+      comentario: sapComentario.trim() || 'ACEPTADO',
+    };
+
+    if (sapBatchList.some((b) => b.imeiFisico === item.imeiFisico)) {
+      showNotification('Este IMEI ya está en el lote actual.', 'error');
+      return;
     }
 
-    // Abre el endpoint de descarga directamente para que el navegador maneje la descarga del archivo CSV/XLSX con el nombre correcto
-    window.open(`/api/despacho/report?${params.toString()}`, '_blank');
+    setSapBatchList((prev) => [...prev, item]);
+    setSapImei('');
+    setSapMarca('');
+    setSapModelo('');
+    setSapMessage({ text: '', type: '' });
+    showNotification('Equipo agregado al lote.');
+  };
+
+  const saveSapBatch = async () => {
+    if (sapBatchList.length === 0) { showNotification('Agregue al menos un equipo al lote.', 'error'); return; }
+    setIsSaving(true);
+    try {
+      const res = await fetch('/api/despacho/sap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sapBatchList),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        showNotification(`Lote de ${data.count} equipo(s) SAP guardado en Supabase.`);
+        setSapBatchList([]);
+        loadSapHistory();
+      } else {
+        showNotification(data.error || 'Error al guardar lote SAP.', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'Error de conexión.', 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const deleteSapHistoryRecord = async (id: string) => {
+    if (!confirm('¿Seguro que deseas eliminar este registro SAP de Supabase?')) return;
+    try {
+      const res = await fetch(`/api/despacho/sap?id=${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        showNotification('Registro SAP eliminado.');
+        loadSapHistory();
+      } else {
+        const data = await res.json();
+        showNotification(data.error || 'Error al eliminar.', 'error');
+      }
+    } catch {
+      showNotification('Error de conexión.', 'error');
+    }
+  };
+
+  const exportSapToCsv = () => {
+    if (!sapHistoryList.length) {
+      showNotification('No hay datos de historial SAP para exportar.', 'error');
+      return;
+    }
+
+    const headers = ['AGENCIA', 'IMEI FISICO', 'No. De DOCUM', 'MARCA', 'MODELO', 'GUIA', 'DIA', 'COMENTARIO'];
+    const csvRows = [headers.join(',')];
+
+    for (const r of sapHistoryList) {
+      const values = [
+        `"${String(r.agencia || '').replace(/"/g, '""')}"`,
+        r.imeiFisico,
+        `"${String(r.noDocumento || '').replace(/"/g, '""')}"`,
+        r.marca,
+        `"${String(r.modelo || '').replace(/"/g, '""')}"`,
+        `"${String(r.guia || '').replace(/"/g, '""')}"`,
+        r.dia,
+        `"${String(r.comentario || '').replace(/"/g, '""')}"`
+      ];
+      csvRows.push(values.join(','));
+    }
+
+    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Equipos_SAP_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   useEffect(() => {
     if (activeTab === 'reporte') {
       loadReport();
+    } else if (activeTab === 'sap') {
+      loadSapHistory();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -1455,7 +1620,6 @@ export default function DespachoPagina() {
                 <select value={reportTemplate} onChange={(e) => setReportTemplate(e.target.value)} className="w-full p-2 bg-white border border-slate-300 rounded focus:outline-none">
                   <option value="TCW_MASTER">TCW Master (Interno)</option>
                   <option value="PLANTILLA_CLARO_MENSUAL">Claro Mensual (Plantilla)</option>
-                  <option value="CLAIMS_DTI">Claims DTI (Plantilla)</option>
                 </select>
               </div>
               <div>
@@ -1474,8 +1638,8 @@ export default function DespachoPagina() {
                 <button onClick={loadReport} disabled={reportLoading} className="flex-1 py-2 bg-[#001e6c] hover:bg-[#00155a] text-white font-bold rounded transition">
                   {reportLoading ? 'Cargando...' : 'Buscar'}
                 </button>
-                <button onClick={exportReportToCsv} className={`flex-1 py-2 font-bold rounded transition flex items-center justify-center gap-1 ${reportTemplate === 'PLANTILLA_CLARO_MENSUAL' ? 'bg-[#107c41] hover:bg-[#185c37] text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}>
-                  <FileText className="w-4 h-4" /> {reportTemplate === 'PLANTILLA_CLARO_MENSUAL' ? 'Exportar Excel' : 'Exportar CSV'}
+                <button onClick={exportReportToCsv} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded transition flex items-center justify-center gap-1">
+                  <FileText className="w-4 h-4" /> Exportar CSV
                 </button>
               </div>
             </div>
@@ -1491,32 +1655,77 @@ export default function DespachoPagina() {
                   <table className="w-full text-left border-collapse text-[11px] whitespace-nowrap">
                     <thead>
                       <tr className="bg-slate-100 text-slate-600 font-bold border-b">
-                        {reportRows.length > 0 && Object.keys(reportRows[0]).map((col) => (
-                          <th key={col} className="p-3 border">{col}</th>
-                        ))}
+                        <th className="p-3 border">Orden</th>
+                        <th className="p-3 border">Oficina Ventas</th>
+                        <th className="p-3 border">CAC o Canal</th>
+                        <th className="p-3 border">Tipo Cliente</th>
+                        <th className="p-3 border">GAM / NO GAM</th>
+                        <th className="p-3 border">Imei / Serie</th>
+                        <th className="p-3 border">Falla</th>
+                        <th className="p-3 border">Garantía</th>
+                        <th className="p-3 border">Estatus</th>
+                        <th className="p-3 border">Tipo de Garantía</th>
+                        <th className="p-3 border">Recepción CSA</th>
+                        <th className="p-3 border">Reparación CSA</th>
+                        <th className="p-3 border">Envío CAC</th>
+                        <th className="p-3 border">Entrega CAC</th>
+                        <th className="p-3 border">Cliente</th>
+                        <th className="p-3 border">Teléfono</th>
+                        <th className="p-3 border">Marca</th>
+                        <th className="p-3 border">Modelo</th>
+                        <th className="p-3 border">Modelo Sap</th>
+                        <th className="p-3 border">Falla reportada por Tienda</th>
+                        <th className="p-3 border">Reparacion realizada por taller CSA</th>
+                        <th className="p-3 border">Fecha de creacion de Folio</th>
+                        <th className="p-3 border">Fecha de envio por parte tienda CAC</th>
+                        <th className="p-3 border">Motivo por que no aplica</th>
+                        <th className="p-3 border">Técnico</th>
+                        <th className="p-3 border">No. Guía de envío a Cac</th>
+                        <th className="p-3 border">Justificación por que se salio del tiempo</th>
+                        <th className="p-3 border text-center">Días</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {reportRows.slice((reportCurrentPage - 1) * reportRowsPerPage, reportCurrentPage * reportRowsPerPage).map((r, idx) => (
+                      {reportRows.map((r, idx) => (
                         <tr key={idx} className="hover:bg-slate-50">
-                          {Object.keys(r).map((col, vIdx) => {
-                            const val = (r as any)[col];
-                            
-                            // Highlight SLA values specially
-                            if (col === 'Estado SLA') {
-                              return (
-                                <td key={vIdx} className="p-3 border font-bold">
-                                  <span className={`px-2 py-0.5 rounded-full text-[10px] ${val === 'Dentro SLA' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>{val}</span>
-                                </td>
-                              );
-                            }
-
-                            return (
-                              <td key={vIdx} className="p-3 border">
-                                {val === null || val === undefined || val === '' ? '—' : String(val)}
-                              </td>
-                            );
-                          })}
+                          <td className="p-3 border font-bold font-mono text-[#001e6c]">{r.Orden}</td>
+                          <td className="p-3 border font-semibold text-slate-700">{r['Oficina Ventas'] || '—'}</td>
+                          <td className="p-3 border font-semibold text-slate-700">{r['CAC o Canal'] || '—'}</td>
+                          <td className="p-3 border">{r['Tipo Cliente'] || '—'}</td>
+                          <td className="p-3 border">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                              r['GAM / NO GAM'] === 'GAM' ? 'bg-blue-100 text-blue-800' :
+                              r['GAM / NO GAM'] === 'NO GAM' ? 'bg-orange-100 text-orange-800' :
+                              'bg-slate-100 text-slate-800'
+                            }`}>{r['GAM / NO GAM']}</span>
+                          </td>
+                          <td className="p-3 border font-mono font-bold text-slate-800">{r.Imei}</td>
+                          <td className="p-3 border">{r.Falla}</td>
+                          <td className="p-3 border">{r.Garantia}</td>
+                          <td className="p-3 border">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              r.Estatus === 'REPARADO' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                            }`}>{r.Estatus}</span>
+                          </td>
+                          <td className="p-3 border text-slate-500 font-semibold text-[10px]">{r['TIPOS DE GARANTIA'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha Recepción Taller CSA'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha de reparación en CSA'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha de Envio CAC'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha entrega a CAC'] || '—'}</td>
+                          <td className="p-3 border">{r.Cliente || '—'}</td>
+                          <td className="p-3 border font-mono">{r.Teléfono || '—'}</td>
+                          <td className="p-3 border">{r.Marca || '—'}</td>
+                          <td className="p-3 border">{r.Modelo || '—'}</td>
+                          <td className="p-3 border">{r['Modelo Sap'] || '—'}</td>
+                          <td className="p-3 border max-w-xs truncate" title={r['Falla reportada por Tienda']}>{r['Falla reportada por Tienda'] || '—'}</td>
+                          <td className="p-3 border max-w-xs truncate" title={r['Reparacion realizada por taller CSA']}>{r['Reparacion realizada por taller CSA'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha de creacion de Folio'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha de envio por parte tienda CAC'] || '—'}</td>
+                          <td className="p-3 border">{r['motivo por que no aplica'] || '—'}</td>
+                          <td className="p-3 border">{r['Técnico'] || '—'}</td>
+                          <td className="p-3 border font-mono">{r['No. Guia de envio a Cac'] || '—'}</td>
+                          <td className="p-3 border max-w-xs truncate" title={r['Justificación por que se salio del tiempo']}>{r['Justificación por que se salio del tiempo'] || '—'}</td>
+                          <td className="p-3 border text-center font-bold font-mono text-slate-600">{r['Unnamed: 12']}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1538,7 +1747,7 @@ export default function DespachoPagina() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {reportRows.slice((reportCurrentPage - 1) * reportRowsPerPage, reportCurrentPage * reportRowsPerPage).map((r, idx) => (
+                      {reportRows.map((r, idx) => (
                         <tr key={idx} className="hover:bg-slate-50">
                           <td className="p-3 border font-bold font-mono text-[#001e6c]">{r.conduceId || r['No. Conduce']}</td>
                           <td className="p-3 border text-slate-500 font-mono text-[10px]">{
@@ -1570,32 +1779,6 @@ export default function DespachoPagina() {
                     </tbody>
                   </table>
                 )}
-                {Math.ceil(reportRows.length / reportRowsPerPage) > 1 && (
-                  <div className="flex items-center justify-between p-4 border-t bg-slate-50">
-                    <span className="text-xs text-slate-500 font-semibold">
-                      Mostrando {(reportCurrentPage - 1) * reportRowsPerPage + 1} a {Math.min(reportCurrentPage * reportRowsPerPage, reportRows.length)} de {reportRows.length} registros
-                    </span>
-                    <div className="flex space-x-2">
-                      <button
-                        onClick={() => setReportCurrentPage(p => Math.max(1, p - 1))}
-                        disabled={reportCurrentPage === 1}
-                        className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold disabled:opacity-50 hover:bg-slate-100"
-                      >
-                        Anterior
-                      </button>
-                      <span className="px-3 py-1 text-xs font-bold text-slate-700">
-                        {reportCurrentPage} / {Math.ceil(reportRows.length / reportRowsPerPage)}
-                      </span>
-                      <button
-                        onClick={() => setReportCurrentPage(p => Math.min(Math.ceil(reportRows.length / reportRowsPerPage), p + 1))}
-                        disabled={reportCurrentPage === Math.ceil(reportRows.length / reportRowsPerPage)}
-                        className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold disabled:opacity-50 hover:bg-slate-100"
-                      >
-                        Siguiente
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -1603,7 +1786,223 @@ export default function DespachoPagina() {
 
         {/* ══════════════ TAB SAP (INGRESO EQUIPOS SAP) ══════════════ */}
         {activeTab === 'sap' && (
-          <SapModule onNotify={showNotification} authRole={authRole} />
+          <div className="space-y-6">
+            {/* PANEL DE REGISTRO */}
+            <div className="bg-white rounded-xl border border-slate-300 shadow-lg overflow-hidden">
+              <div className="p-6 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
+                <div>
+                  <h2 className="text-lg font-bold text-[#001e6c] flex items-center"><Smartphone className="w-5 h-5 mr-2 text-emerald-600" />Ingreso de Equipos SAP</h2>
+                  <p className="text-xs text-slate-500">Escanee el IMEI físico de unidades que ya han pasado por Orderry para registrarlas en SAP.</p>
+                </div>
+              </div>
+
+              <div className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Formulario de escaneo */}
+                <form onSubmit={addSapToBatch} className="space-y-4 text-xs">
+                  <div className="bg-slate-50 p-4 rounded border border-slate-200 space-y-3">
+                    <h3 className="font-bold text-slate-800 text-xs border-b pb-1 flex justify-between items-center">
+                      <span>DATOS DE LA UNIDAD</span>
+                      {sapLoading && <span className="text-[10px] text-blue-600 animate-spin">⌛</span>}
+                    </h3>
+
+                    {/* IMEI Físico */}
+                    <div>
+                      <label className="block font-bold text-slate-700 uppercase mb-1">IMEI Físico</label>
+                      <input
+                        type="text"
+                        placeholder="Escanee o digite IMEI..."
+                        value={sapImei}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSapImei(val);
+                          if (val.trim().length >= 14) {
+                            handleLookupSapImei(val);
+                          }
+                        }}
+                        className="w-full p-2 border border-slate-300 rounded font-mono font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-[#001e6c]"
+                        autoFocus
+                      />
+                      {sapMessage.text && (
+                        <p className={`mt-1 font-semibold text-[10px] ${sapMessage.type === 'error' ? 'text-red-600' : sapMessage.type === 'success' ? 'text-emerald-600' : 'text-blue-600'}`}>
+                          {sapMessage.text}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Agencia */}
+                    <div>
+                      <label className="block font-bold text-slate-700 uppercase mb-1">Agencia</label>
+                      <input type="text" placeholder="Autofilled / Agencia Destinataria" value={sapAgencia} onChange={(e) => setSapAgencia(e.target.value)} className="w-full p-2 border border-slate-300 rounded font-bold" />
+                    </div>
+
+                    {/* No. De Documento */}
+                    <div>
+                      <label className="block font-bold text-slate-700 uppercase mb-1">No. De Documento</label>
+                      <input type="text" placeholder="Orden o Documento" value={sapDocumento} onChange={(e) => setSapDocumento(e.target.value)} className="w-full p-2 border border-slate-300 rounded font-mono" />
+                    </div>
+
+                    {/* Guía */}
+                    <div>
+                      <label className="block font-bold text-slate-700 uppercase mb-1">Guía</label>
+                      <input type="text" placeholder="Código de Guía" value={sapGuia} onChange={(e) => setSapGuia(e.target.value)} className="w-full p-2 border border-slate-300 rounded" />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {/* Marca */}
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1">Marca</label>
+                        <input type="text" placeholder="Marca" value={sapMarca} readOnly className="w-full p-2 bg-slate-100 border border-slate-300 rounded font-bold text-slate-600" />
+                      </div>
+                      {/* Modelo */}
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1">Modelo</label>
+                        <input type="text" placeholder="Modelo" value={sapModelo} readOnly className="w-full p-2 bg-slate-100 border border-slate-300 rounded text-slate-600" />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {/* Día */}
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1">Día</label>
+                        <input type="date" value={sapDia} onChange={(e) => setSapDia(e.target.value)} className="w-full p-2 border border-slate-300 rounded" />
+                      </div>
+                      {/* Comentario */}
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1">Comentario</label>
+                        <input type="text" value={sapComentario} onChange={(e) => setSapComentario(e.target.value)} className="w-full p-2 border border-slate-300 rounded font-bold text-emerald-800" />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={!sapMarca || !sapModelo}
+                      className="w-full py-2 bg-[#001e6c] hover:bg-[#00155a] text-white font-bold rounded shadow transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      ✓ Agregar al Lote
+                    </button>
+                  </div>
+                </form>
+
+                {/* Tabla del Lote Actual */}
+                <div className="lg:col-span-2 flex flex-col justify-between space-y-4">
+                  <div className="border border-slate-200 rounded-lg overflow-hidden flex-1 flex flex-col">
+                    <div className="bg-[#001e6c] text-white p-3 font-bold text-xs flex justify-between items-center">
+                      <span>LOTE SAP ACTUAL PARA GUARDAR ({sapBatchList.length} equipos)</span>
+                      {sapBatchList.length > 0 && (
+                        <button onClick={() => setSapBatchList([])} className="text-amber-400 hover:text-amber-300 font-bold text-[10px] uppercase">Vaciar Lote</button>
+                      )}
+                    </div>
+                    {sapBatchList.length === 0 ? (
+                      <div className="flex-1 flex items-center justify-center p-12 text-slate-400 text-xs">
+                        Escanee un IMEI a la izquierda para ir conformando el lote.
+                      </div>
+                    ) : (
+                      <div className="overflow-auto flex-1 max-h-[300px] text-[11px]">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-100 font-bold border-b text-slate-600">
+                              <th className="p-2 border">Agencia</th>
+                              <th className="p-2 border">IMEI Físico</th>
+                              <th className="p-2 border">No. De Documento</th>
+                              <th className="p-2 border">Marca / Modelo</th>
+                              <th className="p-2 border">Guía</th>
+                              <th className="p-2 border">Día</th>
+                              <th className="p-2 border">Comentario</th>
+                              <th className="p-2 border text-center">X</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            {sapBatchList.map((item, idx) => (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2 border font-bold text-slate-900">{item.agencia}</td>
+                                <td className="p-2 border font-mono font-bold text-slate-800">{item.imeiFisico}</td>
+                                <td className="p-2 border">{item.noDocumento}</td>
+                                <td className="p-2 border">{item.marca} {item.modelo}</td>
+                                <td className="p-2 border font-mono text-[10px]">{item.guia}</td>
+                                <td className="p-2 border font-mono text-[10px]">{item.dia}</td>
+                                <td className="p-2 border text-emerald-800 font-semibold">{item.comentario}</td>
+                                <td className="p-2 border text-center">
+                                  <button onClick={() => setSapBatchList((prev) => prev.filter((_, i) => i !== idx))} className="text-red-600 hover:text-red-800 font-bold">&times;</button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={saveSapBatch}
+                    disabled={isSaving || sapBatchList.length === 0}
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg shadow-md transition disabled:opacity-50"
+                  >
+                    {isSaving ? 'Guardando...' : `💾 Guardar ${sapBatchList.length} Equipos en Supabase (SAP)`}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* TABLA HISTORIAL SAP */}
+            <div className="bg-white rounded-xl border border-slate-300 shadow-lg overflow-hidden p-6 space-y-4">
+              <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b border-slate-200 pb-4">
+                <div>
+                  <h3 className="text-base font-bold text-[#001e6c] flex items-center"><FileText className="w-5 h-5 mr-2" />Registro Histórico SAP</h3>
+                  <p className="text-xs text-slate-500">Muestra los equipos guardados previamente en Supabase.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <input type="date" value={sapHistoryStartDate} onChange={(e) => setSapHistoryStartDate(e.target.value)} className="p-1.5 border border-slate-300 rounded" />
+                  <input type="date" value={sapHistoryEndDate} onChange={(e) => setSapHistoryEndDate(e.target.value)} className="p-1.5 border border-slate-300 rounded" />
+                  <input type="text" placeholder="Buscar IMEI, Doc, Agencia..." value={sapHistorySearch} onChange={(e) => setSapHistorySearch(e.target.value)} className="p-1.5 border border-slate-300 rounded w-48" />
+                  <button onClick={loadSapHistory} disabled={sapHistoryLoading} className="px-3 py-1.5 bg-[#001e6c] hover:bg-[#00155a] text-white font-bold rounded transition">Filtrar</button>
+                  <button onClick={exportSapToCsv} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded transition flex items-center gap-1"><FileText className="w-4 h-4" /> Exportar</button>
+                </div>
+              </div>
+
+              {sapHistoryLoading ? (
+                <div className="p-12 text-center text-slate-500 animate-pulse">Cargando registros SAP...</div>
+              ) : sapHistoryList.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 bg-slate-50 border rounded border-dashed">No hay registros SAP guardados.</div>
+              ) : (
+                <div className="overflow-x-auto border border-slate-200 rounded-lg text-[11px] whitespace-nowrap">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100 font-bold border-b text-slate-600">
+                        <th className="p-2 border">Agencia</th>
+                        <th className="p-2 border">IMEI Físico</th>
+                        <th className="p-2 border">No. De Documento</th>
+                        <th className="p-2 border">Marca</th>
+                        <th className="p-2 border">Modelo</th>
+                        <th className="p-2 border">Guía</th>
+                        <th className="p-2 border">Día</th>
+                        <th className="p-2 border">Comentario</th>
+                        {authRole === 'admin' && <th className="p-2 border text-center">Acciones</th>}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {sapHistoryList.map((r) => (
+                        <tr key={r.id} className="hover:bg-slate-50">
+                          <td className="p-2 border font-bold text-slate-900">{r.agencia}</td>
+                          <td className="p-2 border font-mono font-bold text-slate-800">{r.imeiFisico}</td>
+                          <td className="p-2 border font-mono text-slate-600">{r.noDocumento}</td>
+                          <td className="p-2 border font-bold text-slate-700">{r.marca}</td>
+                          <td className="p-2 border text-slate-800">{r.modelo}</td>
+                          <td className="p-2 border font-mono">{r.guia}</td>
+                          <td className="p-2 border font-mono">{r.dia}</td>
+                          <td className="p-2 border text-emerald-800 font-semibold">{r.comentario}</td>
+                          {authRole === 'admin' && (
+                            <td className="p-2 border text-center">
+                              <button onClick={() => deleteSapHistoryRecord(r.id)} className="text-red-600 hover:text-red-800 font-bold">Eliminar</button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </main>
 

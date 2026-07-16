@@ -451,9 +451,8 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
     for (let i = 1; i <= 8; i++) {
       let partSku = '';
       if (isRepair && partesArray[i - 1]) {
-        partSku = partesArray[i - 1]; // Usar la parte detectada
+        partSku = partesArray[i - 1] || ''; // Usar la parte detectada
       }
-
       columnsMap[`old_PN${i}`] = partSku;
       columnsMap[`new_PN${i}`] = partSku;
       
