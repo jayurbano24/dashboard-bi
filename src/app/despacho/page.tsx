@@ -277,6 +277,11 @@ export default function DespachoPagina() {
   const [sapMarca, setSapMarca] = useState('');
   const [sapModelo, setSapModelo] = useState('');
   const [sapGuia, setSapGuia] = useState('');
+  const [sapMaterial, setSapMaterial] = useState('');
+  const [sapOrdenServicio, setSapOrdenServicio] = useState('');
+  const [sapEstatus, setSapEstatus] = useState('');
+  const [sapFechaAceptado, setSapFechaAceptado] = useState('');
+  const sapImeiTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [sapDia, setSapDia] = useState(new Date().toISOString().slice(0, 10));
   const [sapComentario, setSapComentario] = useState('ACEPTADO');
   const [sapLoading, setSapLoading] = useState(false);
@@ -464,15 +469,17 @@ export default function DespachoPagina() {
         setSapMarca(result.marca || '');
         setSapModelo(result.modelo || '');
         setSapAgencia(result.canalIngreso && result.canalIngreso !== 'N/A' ? result.canalIngreso : '');
-        setSapDocumento(result.ordenNumero || '');
-        setSapGuia(result.ordenNumero || '');
+        setSapOrdenServicio(result.ordenNumero || '');
+        setSapEstatus(result.rawStatus || result.estadoGanado || '');
+        setSapFechaAceptado(result.created_at ? new Date(result.created_at).toISOString().slice(0, 10) : '');
       } else {
         setSapMessage({ text: '🚫 IMEI no encontrado en Orderry. Debe haber pasado por el sistema.', type: 'error' });
         setSapMarca('');
         setSapModelo('');
         setSapAgencia('');
-        setSapDocumento('');
-        setSapGuia('');
+        setSapOrdenServicio('');
+        setSapEstatus('');
+        setSapFechaAceptado('');
       }
     } catch (err: any) {
       setSapMessage({ text: `Error: ${err.message}`, type: 'error' });
@@ -484,17 +491,24 @@ export default function DespachoPagina() {
   const addSapToBatch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!sapImei.trim()) { showNotification('Ingrese el IMEI.', 'error'); return; }
-    if (!sapMarca || !sapModelo) { showNotification('El equipo debe validarse en Orderry antes de agregar.', 'error'); return; }
+    if (!sapMaterial.trim()) { showNotification('El campo Material SAP es obligatorio.', 'error'); return; }
 
+    const validado = !!(sapMarca && sapModelo);
     const item = {
       agencia: sapAgencia.trim() || 'Sin Agencia',
       imeiFisico: sapImei.trim(),
       noDocumento: sapDocumento.trim() || 'N/A',
-      marca: sapMarca.trim(),
-      modelo: sapModelo.trim(),
+      material: sapMaterial.trim() || 'N/A',
+      marca: validado ? sapMarca.trim() : 'Desconocida',
+      modelo: validado ? sapModelo.trim() : 'Desconocido',
       guia: sapGuia.trim() || 'N/A',
       dia: sapDia,
+      orderryStatus: validado ? 'paso por sistemas' : 'no paso por sistemas',
+      foundInOrderry: validado,
       comentario: sapComentario.trim() || 'ACEPTADO',
+      ordenServicio: sapOrdenServicio.trim() || 'N/A',
+      estatusOrderry: sapEstatus.trim() || 'N/A',
+      fechaAceptadoOrderry: sapFechaAceptado.trim() || 'N/A',
     };
 
     if (sapBatchList.some((b) => b.imeiFisico === item.imeiFisico)) {
@@ -1883,8 +1897,11 @@ export default function DespachoPagina() {
                         onChange={(e) => {
                           const val = e.target.value;
                           setSapImei(val);
+                          if (sapImeiTimeoutRef.current) clearTimeout(sapImeiTimeoutRef.current);
                           if (val.trim().length >= 14) {
-                            handleLookupSapImei(val);
+                            sapImeiTimeoutRef.current = setTimeout(() => {
+                              handleLookupSapImei(val);
+                            }, 500);
                           }
                         }}
                         className="w-full p-2 border border-slate-300 rounded font-mono font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-[#001e6c]"
@@ -1909,10 +1926,32 @@ export default function DespachoPagina() {
                       <input type="text" placeholder="Orden o Documento" value={sapDocumento} onChange={(e) => setSapDocumento(e.target.value)} className="w-full p-2 border border-slate-300 rounded font-mono" />
                     </div>
 
-                    {/* Guía */}
-                    <div>
-                      <label className="block font-bold text-slate-700 uppercase mb-1">Guía</label>
-                      <input type="text" placeholder="Código de Guía" value={sapGuia} onChange={(e) => setSapGuia(e.target.value)} className="w-full p-2 border border-slate-300 rounded" />
+                    {/* Nuevos Campos Orderry */}
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1 text-[10px]">Orden Servicio</label>
+                        <input type="text" placeholder="TCGT-..." value={sapOrdenServicio} readOnly className="w-full p-2 bg-slate-100 border border-slate-300 rounded font-mono font-bold text-slate-600 text-[11px]" />
+                      </div>
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1 text-[10px]">Estatus</label>
+                        <input type="text" placeholder="Estatus" value={sapEstatus} readOnly className="w-full p-2 bg-slate-100 border border-slate-300 rounded font-bold text-blue-700 text-[11px]" />
+                      </div>
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1 text-[10px]">Fecha Aceptado</label>
+                        <input type="text" placeholder="Fecha" value={sapFechaAceptado} readOnly className="w-full p-2 bg-slate-100 border border-slate-300 rounded text-[11px] text-slate-600 font-mono" />
+                      </div>
+                    </div>
+
+                    {/* Guía & Material */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1">Guía</label>
+                        <input type="text" placeholder="Código de Guía" value={sapGuia} onChange={(e) => setSapGuia(e.target.value)} className="w-full p-2 border border-slate-300 rounded" />
+                      </div>
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase mb-1">Material</label>
+                        <input type="text" placeholder="Material SAP" value={sapMaterial} onChange={(e) => setSapMaterial(e.target.value)} className="w-full p-2 border border-slate-300 rounded font-mono font-bold text-emerald-800" />
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
@@ -1943,7 +1982,7 @@ export default function DespachoPagina() {
 
                     <button
                       type="submit"
-                      disabled={!sapMarca || !sapModelo}
+                      disabled={sapImei.trim().length < 5}
                       className="w-full py-2 bg-[#001e6c] hover:bg-[#00155a] text-white font-bold rounded shadow transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       ✓ Agregar al Lote
@@ -1973,8 +2012,13 @@ export default function DespachoPagina() {
                               <th className="p-2 border">IMEI Físico</th>
                               <th className="p-2 border">No. De Documento</th>
                               <th className="p-2 border">Marca / Modelo</th>
+                              <th className="p-2 border">Orden Servicio</th>
+                              <th className="p-2 border">Estatus Orderry</th>
+                              <th className="p-2 border">Fecha Aceptado</th>
                               <th className="p-2 border">Guía</th>
+                              <th className="p-2 border">Material SAP</th>
                               <th className="p-2 border">Día</th>
+                              <th className="p-2 border">Estatus Sist.</th>
                               <th className="p-2 border">Comentario</th>
                               <th className="p-2 border text-center">X</th>
                             </tr>
@@ -1986,8 +2030,13 @@ export default function DespachoPagina() {
                                 <td className="p-2 border font-mono font-bold text-slate-800">{item.imeiFisico}</td>
                                 <td className="p-2 border">{item.noDocumento}</td>
                                 <td className="p-2 border">{item.marca} {item.modelo}</td>
+                                <td className="p-2 border font-mono text-[10px]">{item.ordenServicio}</td>
+                                <td className="p-2 border font-bold text-[10px] text-blue-700">{item.estatusOrderry}</td>
+                                <td className="p-2 border font-mono text-[10px]">{item.fechaAceptadoOrderry}</td>
                                 <td className="p-2 border font-mono text-[10px]">{item.guia}</td>
+                                <td className="p-2 border font-mono text-[10px] text-emerald-700 font-bold">{item.material}</td>
                                 <td className="p-2 border font-mono text-[10px]">{item.dia}</td>
+                                <td className={`p-2 border font-bold text-[10px] ${item.orderryStatus === 'paso por sistemas' ? 'text-emerald-600' : 'text-red-600'}`}>{item.orderryStatus}</td>
                                 <td className="p-2 border text-emerald-800 font-semibold">{item.comentario}</td>
                                 <td className="p-2 border text-center">
                                   <button onClick={() => setSapBatchList((prev) => prev.filter((_, i) => i !== idx))} className="text-red-600 hover:text-red-800 font-bold">&times;</button>
@@ -2043,6 +2092,9 @@ export default function DespachoPagina() {
                         <th className="p-2 border">Modelo</th>
                         <th className="p-2 border">Guía</th>
                         <th className="p-2 border">Día</th>
+                        <th className="p-2 border">Estatus</th>
+                        <th className="p-2 border">Fecha Registro</th>
+                        <th className="p-2 border">Usuario</th>
                         <th className="p-2 border">Comentario</th>
                         {authRole === 'admin' && <th className="p-2 border text-center">Acciones</th>}
                       </tr>
@@ -2057,6 +2109,9 @@ export default function DespachoPagina() {
                           <td className="p-2 border text-slate-800">{r.modelo}</td>
                           <td className="p-2 border font-mono">{r.guia}</td>
                           <td className="p-2 border font-mono">{r.dia}</td>
+                          <td className={`p-2 border font-bold text-[10px] ${r.orderryStatus === 'paso por sistemas' ? 'text-blue-600' : r.orderryStatus === 'no paso por sistemas' ? 'text-red-600' : 'text-slate-600'}`}>{r.orderryStatus || 'N/A'}</td>
+                          <td className="p-2 border font-mono text-[10px]">{r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}</td>
+                          <td className="p-2 border font-mono text-[10px] truncate max-w-[120px]" title={r.usuarioRegistro}>{r.usuarioRegistro}</td>
                           <td className="p-2 border text-emerald-800 font-semibold">{r.comentario}</td>
                           {authRole === 'admin' && (
                             <td className="p-2 border text-center">
