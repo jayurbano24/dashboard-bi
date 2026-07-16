@@ -1,4 +1,4 @@
-import type { DispatchSapLotCommand, SaveSapLotCommand, SapEquipoRecordDto, SapHistoryRecordDto, SapLotRecordDto } from '../application/dtos';
+import type { DispatchSapLotCommand, SaveSapLotCommand, SapEquipoRecordDto, SapHistoryRecordDto, SapLotRecordDto } from '../../application/dtos';
 
 export interface ISapEquipmentRepository {
   findByImeis(imeis: string[]): Promise<SapEquipoRecordDto[]>;

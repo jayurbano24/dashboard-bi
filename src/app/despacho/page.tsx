@@ -68,6 +68,7 @@ interface UnidadDespachada {
   orderId?: number | null;
   cliente?: string;
   telefono?: string;
+  falla?: string;
   fechaEnvioTienda?: string;
   motivoNoAplica?: string;
   tecnico?: string;
@@ -141,6 +142,19 @@ interface AvailableOrder {
   color: string;
   canalIngreso: string;
   tipoIngreso: string;
+  cliente?: string;
+  telefono?: string;
+  falla?: string;
+  serviciosObras?: string;
+  tecnico?: string;
+  fechaEnvioTienda?: string;
+  motivoNoAplica?: string;
+  fechaFacturacion?: string;
+  folioPdv?: string;
+  justificacionTiempo?: string;
+  garantia?: string;
+  tipoOrden?: string;
+  modeloSap?: string;
 }
 
 type SucursalInfo = { direccion: string | number; contacto: string | number; cantPaquetesDisp: string | number; cantMaxPaquetes: string | number };
@@ -829,7 +843,33 @@ export default function DespachoPagina() {
         }
         throw new Error(message);
       }
-      return res.json() as Promise<{ found: boolean; orderId?: number | null; marca: string; modelo: string; producto: string; rawStatus: string; estadoGanado: string; ordenNumero?: string; tecnico?: string; cliente?: string; tipoOrden?: string; color?: string; reparada?: boolean | null; canalIngreso?: string; tipoIngreso?: string; grupo?: string }>;
+      return res.json() as Promise<{
+        found: boolean;
+        orderId?: number | null;
+        marca: string;
+        modelo: string;
+        producto: string;
+        rawStatus: string;
+        estadoGanado: string;
+        ordenNumero?: string;
+        tecnico?: string;
+        cliente?: string;
+        telefono?: string;
+        tipoOrden?: string;
+        color?: string;
+        reparada?: boolean | null;
+        canalIngreso?: string;
+        tipoIngreso?: string;
+        grupo?: string;
+        falla?: string;
+        fechaEnvioTienda?: string;
+        motivoNoAplica?: string;
+        justificacionTiempo?: string;
+        garantia?: string;
+        serviciosObras?: string;
+        created_at?: string | null;
+        closed_at?: string | null;
+      }>;
     } catch (err: any) {
       if (err?.name === 'AbortError') {
         throw new Error('Tiempo de espera agotado consultando Orderry. Intenta de nuevo.');

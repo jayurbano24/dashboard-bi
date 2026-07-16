@@ -1,7 +1,7 @@
 /**
  * Encapsula la validación IMEI existente sin modificar la ruta /api/despacho/imei-lookup.
  */
-import type { OrderryValidationDto } from '../../application/dtos';
+import type { OrderryValidationDto } from '../application/dtos';
 
 export class OrderryValidationService {
   constructor(private readonly baseUrl: string) {}

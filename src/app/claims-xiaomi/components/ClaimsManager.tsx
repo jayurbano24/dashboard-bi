@@ -427,31 +427,59 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
     };
 
     // Extraer array de SKUs (Partes) del campo Productos, Servicios y Eventos de Timeline
+    // Formato Orderry: "1300101000331A-Redmi A5 ... RINGER" → "1300101000331A"
     const extractSku = (partStr: string) => {
       let clean = partStr.replace(/^(SKU:|NEW|REPUESTO)\s*/i, '').trim();
-      const matches = Array.from(clean.matchAll(/\b([A-Z0-9]{8,15})\b/gi));
+      if (!clean) return null;
+
+      // Preferir prefijo antes del primer guión (código real de parte)
+      const prefix = clean.split('-')[0]?.trim() || '';
+      if (
+        prefix.length >= 8 &&
+        prefix.length <= 20 &&
+        /^[A-Z0-9]+$/i.test(prefix) &&
+        /\d/.test(prefix) &&
+        /[A-Z]/i.test(prefix) &&
+        !/^\d{14,16}$/.test(prefix)
+      ) {
+        return prefix.toUpperCase();
+      }
+
+      const matches = Array.from(clean.matchAll(/\b([A-Z0-9]{8,20})\b/gi));
       for (const m of matches) {
         const candidate = m[1].toUpperCase();
-        // Es válido si NO son solo 15 dígitos (IMEI) y CONTIENE al menos un número (evita palabras regulares)
-        if (!/^\d{15}$/.test(candidate) && /\d/.test(candidate)) {
-          return candidate; 
+        // Es válido si NO son solo 14-16 dígitos (IMEI) y CONTIENE letra + número
+        if (!/^\d{14,16}$/.test(candidate) && /\d/.test(candidate) && /[A-Z]/i.test(candidate)) {
+          return candidate;
         }
       }
-      const fallback = clean.split(/[- ]/)[0].toUpperCase();
-      // El fallback también debe contener al menos un número
-      return fallback.length > 4 && !/^\d{15}$/.test(fallback) && /\d/.test(fallback) ? fallback : null;
+      return null;
     };
 
-    const allItems = [repuestos_utilizados, servicios_obras, historyText].filter(Boolean).join(',');
-    const partesArray = Array.from(new Set(
-      allItems.split(/[,;\n]+/).map(extractSku).filter(Boolean)
-    ));
+    // También aceptar arrays de objetos de productos Orderry (sku/code/title)
+    const productObjects = [
+      ...(Array.isArray(row.parts) ? row.parts : []),
+      ...(Array.isArray(row.materials) ? row.materials : []),
+      ...(Array.isArray(row.products) ? row.products : []),
+      ...(Array.isArray(row.items) ? row.items : []),
+      ...(Array.isArray(row.orderryParts) ? row.orderryParts : []),
+    ];
+    const fromObjects = productObjects
+      .map((p: any) => {
+        if (typeof p === 'string') return extractSku(p);
+        return extractSku(String(p?.code || p?.sku || p?.entity?.sku || p?.entity?.code || p?.title || p?.name || ''));
+      })
+      .filter(Boolean) as string[];
 
-    // Mapear hasta 8 partes
+    const allItems = [repuestos_utilizados, servicios_obras, historyText].filter(Boolean).join(',');
+    const fromText = allItems.split(/[,;\n]+/).map(extractSku).filter(Boolean) as string[];
+    const partesArray = Array.from(new Set([...fromObjects, ...fromText]));
+
+    // Mapear hasta 8 partes — NUNCA usar el PCBA fijo del catálogo como PN de repuesto
     for (let i = 1; i <= 8; i++) {
       let partSku = '';
       if (isRepair && partesArray[i - 1]) {
-        partSku = partesArray[i - 1] || ''; // Usar la parte detectada
+        partSku = partesArray[i - 1] || '';
       }
       columnsMap[`old_PN${i}`] = partSku;
       columnsMap[`new_PN${i}`] = partSku;
@@ -554,6 +582,22 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
           setClaims(mappedFromAPI);
           setSelectedClaimId(mappedFromAPI[0].id_local);
           setDataSourceLabel('API Orderry (Tiempo Real)');
+
+          // Auto-sync solo Repair y en segundo plano (manual: botón Extraer Piezas)
+          const repairForSync = mappedFromAPI.filter((c: any) => c.serviceType === 'Repair' && c.orderry_id).slice(0, 40);
+          if (repairForSync.length > 0) {
+            setIsSyncingParts(true);
+            // Deferir para no bloquear el primer paint / navegación RSC
+            setTimeout(() => {
+              syncPartsFromOrderry(mappedFromAPI, true)
+                .then((withParts) => {
+                  setClaims(withParts);
+                  setDataSourceLabel('API Orderry + Partes reales');
+                })
+                .catch(() => { /* silent */ })
+                .finally(() => setIsSyncingParts(false));
+            }, 800);
+          }
           return;
         }
       }
@@ -630,7 +674,19 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
     setClaims(claims.map(c => {
       if (c.id_local === id) {
         const targetType = c.serviceType === 'Repair' ? 'Inspection' : 'Repair';
-        const activePCBACode = c.materialCode || '581K7TLCCG00';
+        // Preservar PNs reales ya sincronizados; solo limpiar al pasar a Inspection
+        const preservedPn: Record<string, string> = {};
+        for (let i = 1; i <= 8; i++) {
+          const oldPn = String(c.columns[`old_PN${i}`] || '');
+          const newPn = String(c.columns[`new_PN${i}`] || '');
+          if (targetType === 'Repair') {
+            preservedPn[`old_PN${i}`] = oldPn;
+            preservedPn[`new_PN${i}`] = newPn || oldPn;
+          } else {
+            preservedPn[`old_PN${i}`] = '';
+            preservedPn[`new_PN${i}`] = '';
+          }
+        }
         const updatedRow = {
           ...c,
           serviceType: targetType,
@@ -638,10 +694,7 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
             ...c.columns,
             service_type: targetType,
             processing_method_code: targetType === 'Repair' ? '5001' : '3001',
-            old_PN1: targetType === 'Repair' ? activePCBACode : '',
-            old_SN1_Or_IMEI1: targetType === 'Repair' ? activePCBACode : '', 
-            new_PN1: targetType === 'Repair' ? activePCBACode : '',
-            new_SN1_Or_IMEI1: targetType === 'Repair' ? activePCBACode : '', 
+            ...preservedPn,
           }
         };
         return updatedRow;
@@ -673,6 +726,14 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
 
   const handleSaveEdit = () => {
     const isRepair = editForm.serviceType === 'Repair';
+    // No sobreescribir PNs con materialCode (PCBA de catálogo). Solo limpiar si pasa a Inspection.
+    const pnPatch: Record<string, string> = {};
+    if (!isRepair) {
+      for (let i = 1; i <= 8; i++) {
+        pnPatch[`old_PN${i}`] = '';
+        pnPatch[`new_PN${i}`] = '';
+      }
+    }
     const updatedColumns = {
       ...editForm.columns,
       service_type: editForm.serviceType,
@@ -680,10 +741,7 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
       goods_id: editForm.goodsId,
       SN_Or_IMEI1: editForm.imei, 
       Level_3_malfunction_code: editForm.matchedFallaCode,
-      old_PN1: isRepair ? editForm.materialCode : '',
-      old_SN1_Or_IMEI1: isRepair ? editForm.materialCode : '', 
-      new_PN1: isRepair ? editForm.materialCode : '',
-      new_SN1_Or_IMEI1: isRepair ? editForm.materialCode : '', 
+      ...pnPatch,
     };
 
     const updated = claims.map(c => {
@@ -712,61 +770,105 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
     setTimeout(() => setNotification(null), 3000);
   };
 
+  const applyOrderryPartsToClaims = (
+    currentClaims: any[],
+    orderProducts: Record<string, Array<{ sku: string; code: string; title: string }>>,
+  ) => {
+    return currentClaims.map((claim) => {
+      if (!claim.orderry_id || !orderProducts[claim.orderry_id]) return claim;
+
+      const parts = orderProducts[claim.orderry_id] || [];
+      if (!parts.length) return claim;
+
+      // Solo llenar PN en Repair (Inspection/NC no llevan repuestos)
+      if (claim.serviceType !== 'Repair') return claim;
+
+      const newColumns = { ...claim.columns };
+      // Limpiar PN previos (incluyendo códigos PCBA fijos erróneos)
+      for (let i = 1; i <= 8; i++) {
+        newColumns[`old_PN${i}`] = '';
+        newColumns[`new_PN${i}`] = '';
+      }
+
+      let partIndex = 1;
+      parts.forEach((part) => {
+        if (partIndex > 8) return;
+        const code = String(part.code || part.sku || '').trim();
+        if (!code) return;
+        newColumns[`old_PN${partIndex}`] = code;
+        newColumns[`new_PN${partIndex}`] = code;
+        partIndex += 1;
+      });
+
+      return { ...claim, columns: newColumns, orderryPartsSynced: true };
+    });
+  };
+
+  const syncPartsFromOrderry = async (claimsToSync: any[], silent = false) => {
+    // Preferir Repair; si no hay, no forzar sync masivo
+    const repairIds = claimsToSync
+      .filter((c) => c.serviceType === 'Repair' && c.orderry_id)
+      .map((c) => String(c.orderry_id));
+    const uniqueIds = Array.from(new Set(repairIds)).slice(0, 60);
+
+    if (!uniqueIds.length) {
+      if (!silent) showToast('No hay órdenes Repair con ID de Orderry para sincronizar.');
+      return claimsToSync;
+    }
+
+    const orderIds = uniqueIds.join(',');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90000);
+
+    try {
+      const res = await fetch('/api/bodega/parts-demand?order_ids=' + orderIds, {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        if (!silent) showToast('Error al conectar con la bodega de Orderry.');
+        return claimsToSync;
+      }
+
+      const data = await res.json();
+      if (!data.orderProducts) {
+        if (!silent) showToast('No se encontraron repuestos adicionales.');
+        return claimsToSync;
+      }
+
+      const updated = applyOrderryPartsToClaims(claimsToSync, data.orderProducts);
+      const syncedCount = Object.keys(data.orderProducts).filter((oid) =>
+        (data.orderProducts[oid] || []).length > 0 &&
+        claimsToSync.some((c) => String(c.orderry_id) === String(oid) && c.serviceType === 'Repair'),
+      ).length;
+
+      if (!silent) {
+        showToast(syncedCount > 0
+          ? `¡Repuestos sincronizados desde Orderry (${syncedCount} órdenes)!`
+          : 'No se encontraron productos/repuestos en las órdenes.');
+      }
+      return updated;
+    } catch (err: any) {
+      if (!silent) {
+        showToast(err?.name === 'AbortError'
+          ? 'Tiempo de espera agotado al sincronizar partes. Intenta de nuevo.'
+          : 'Ocurrió un error en la sincronización de repuestos.');
+      }
+      return claimsToSync;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const handleSyncParts = async () => {
     setIsSyncingParts(true);
     showToast('Sincronizando repuestos reales desde Orderry...');
-    
-    // Solo sincronizar órdenes que sean Repair y tengan orderry_id
-    const repairClaims = filteredClaims.filter(c => c.serviceType === 'Repair' && c.orderry_id);
-    
-    if (repairClaims.length === 0) {
-      showToast('No hay reclamos tipo Repair para sincronizar repuestos.');
-      setIsSyncingParts(false);
-      return;
-    }
-    
-    // Extraer solo los IDs únicos
-    const orderIds = Array.from(new Set(repairClaims.map(c => c.orderry_id))).join(',');
-    
     try {
-      // Llamar al endpoint que creamos previamente para la bodega que consulta /products de Orderry
-      const res = await fetch('/api/bodega/parts-demand?order_ids=' + orderIds);
-      if (res.ok) {
-        const data = await res.json();
-        
-        if (data.orderProducts) {
-          setClaims(prev => prev.map(claim => {
-            // Si la orden no tiene repuestos o no es esta, se deja intacta
-            if (!claim.orderry_id || !data.orderProducts[claim.orderry_id]) return claim;
-            
-            const parts = data.orderProducts[claim.orderry_id];
-            if (parts.length === 0) return claim;
-
-            const newColumns = { ...claim.columns };
-            let partIndex = 1; // old_PN1 a old_PN8
-            
-            // Asignar los SKUs reales encontrados en Orderry /products
-            parts.forEach((part: any) => {
-              if (partIndex <= 8) {
-                // part.code suele tener el SKU puro extraído en el endpoint de bodega
-                newColumns[`old_PN${partIndex}`] = part.code || part.sku;
-                partIndex++;
-              }
-            });
-            
-            return { ...claim, columns: newColumns };
-          }));
-          showToast('¡Repuestos de servicios sincronizados con éxito!');
-        } else {
-          showToast('No se encontraron repuestos adicionales.');
-        }
-      } else {
-        showToast('Error al conectar con la bodega de Orderry.');
-      }
-    } catch (e) {
+      const updated = await syncPartsFromOrderry(claims, false);
+      setClaims(updated);
+    } catch {
       showToast('Ocurrió un error en la sincronización de repuestos.');
     }
-    
     setIsSyncingParts(false);
   };
 
@@ -842,7 +944,7 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
             disabled={isSyncingParts}
             className={`${isSyncingParts ? 'bg-slate-700 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-500'} text-white font-bold text-xs px-4 py-2 rounded-xl transition-all flex items-center gap-2`}
           >
-            {isSyncingParts ? '⏳ Sincronizando...' : '⬇️ Extraer Piezas (Servicios)'}
+            {isSyncingParts ? '⏳ Extrayendo partes...' : '⬇️ Extraer Piezas Reales (Orderry)'}
           </button>
 
           <button

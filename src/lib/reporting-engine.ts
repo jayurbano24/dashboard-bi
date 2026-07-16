@@ -351,7 +351,7 @@ export class ReportingEngine {
       'G269': 'Zacapa', 'G241': 'Quetzaltenango', 'G238': 'Quetzaltenango', 'G240': 'San Marcos',
       'G239': 'Quetzaltenango', 'G23Q': 'Quetzaltenango', 'G26H': 'Quetzaltenango', 'G244': 'San Marcos',
       'G246': 'San Marcos', 'G245': 'San Marcos', 'G242': 'Huehuetenango', 'G257': 'Sololá',
-      'G274': 'Quiché', 'G277': 'Totonicapán', 'G252': 'Escuintla', 'G253': 'Escuintla',
+      'G274': 'Quiché', 'G252': 'Escuintla', 'G253': 'Escuintla',
       'G258': 'Escuintla', 'G248': 'Suchitepéquez', 'G247': 'Suchitepéquez', 'G251': 'Retalhuleu',
       'G249': 'Suchitepéquez'
     };
