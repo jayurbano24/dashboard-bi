@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+export const maxDuration = 60; // Allow max duration on Vercel Pro
 
 const KNOWN_BRANDS = [
   'Apple', 'Samsung', 'Xiaomi', 'Motorola', 'Huawei', 'Honor',
@@ -102,8 +103,11 @@ export async function GET(request: Request) {
       
       return !!row.order_id && (missingCreatedAt || missingOrderName || missingModeloSap || missingDoneAt || missingFields);
     });
+    
+    // LIMIT TO 50 ITEMS PER REQUEST TO PREVENT VERCEL 10s/60s TIMEOUTS
+    const limitedMissingRows = missingRows.slice(0, 50);
 
-    if (missingRows.length === 0) {
+    if (limitedMissingRows.length === 0) {
       return NextResponse.json({ ok: true, message: 'Todo está al día. No hay filas pendientes de actualizar.', updated: 0 });
     }
 
@@ -140,8 +144,8 @@ export async function GET(request: Request) {
     const batchSize = 30;
 
     // Procesar en lotes paralelos
-    for (let i = 0; i < missingRows.length; i += batchSize) {
-      const batch = missingRows.slice(i, i + batchSize);
+    for (let i = 0; i < limitedMissingRows.length; i += batchSize) {
+      const batch = limitedMissingRows.slice(i, i + batchSize);
       
       await Promise.all(
         batch.map(async (row) => {
@@ -354,8 +358,9 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       ok: true,
-      message: `Proceso de lote completado. Se actualizaron ${updatedCount} filas de histórico.`,
+      message: `Proceso completado. Se actualizaron ${updatedCount} filas de histórico. Quedan ${missingRows.length - limitedMissingRows.length} pendientes.`,
       updated: updatedCount,
+      pending: missingRows.length - limitedMissingRows.length,
       errors: errors.slice(0, 50),
       hasMoreErrors: errors.length > 50,
     });
