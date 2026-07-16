@@ -267,6 +267,8 @@ export default function DespachoPagina() {
   const [reportRegion, setReportRegion] = useState<'TODOS' | 'GAM' | 'NO GAM'>('TODOS');
   const [reportRows, setReportRows] = useState<any[]>([]);
   const [reportLoading, setReportLoading] = useState(false);
+  const [reportPage, setReportPage] = useState(1);
+  const reportPageSize = 25;
 
   // --- SAP Equipment States ---
   const [sapImei, setSapImei] = useState('');
@@ -394,6 +396,7 @@ export default function DespachoPagina() {
       const data = await res.json();
       if (data.ok && Array.isArray(data.rows)) {
         setReportRows(data.rows);
+        setReportPage(1);
       } else {
         showNotification(data.error || 'Error al cargar reporte.', 'error');
       }
@@ -420,7 +423,7 @@ export default function DespachoPagina() {
     if (reportDoa !== 'ALL') params.append('doa', reportDoa);
     if (reportTemplate) params.append('template', reportTemplate);
     if (reportRegion) params.append('region', reportRegion);
-    params.append('format', 'csv');
+    params.append('format', 'xlsx');
 
     // Abre el endpoint de descarga directamente para que el navegador maneje la descarga del archivo CSV con el nombre correcto
     window.open(`/api/despacho/report?${params.toString()}`, '_blank');
@@ -1679,7 +1682,7 @@ export default function DespachoPagina() {
                   {reportLoading ? 'Cargando...' : 'Buscar'}
                 </button>
                 <button onClick={exportReportToCsv} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded transition flex items-center justify-center gap-1">
-                  <FileText className="w-4 h-4" /> Exportar CSV
+                  <FileText className="w-4 h-4" /> Exportar Excel
                 </button>
               </div>
             </div>
@@ -1699,36 +1702,35 @@ export default function DespachoPagina() {
                         <th className="p-3 border">Oficina Ventas</th>
                         <th className="p-3 border">CAC o Canal</th>
                         <th className="p-3 border">Tipo Cliente</th>
-                        <th className="p-3 border">GAM / NO GAM</th>
+                        <th className="p-3 border text-center">GAM / NO GAM</th>
                         <th className="p-3 border">Imei / Serie</th>
                         <th className="p-3 border">Falla</th>
                         <th className="p-3 border">Garantía</th>
                         <th className="p-3 border">Estatus</th>
                         <th className="p-3 border">Tipo de Garantía</th>
-                        <th className="p-3 border">Recepción CSA</th>
+                        <th className="p-3 border">Recepción Taller</th>
                         <th className="p-3 border">Reparación CSA</th>
                         <th className="p-3 border">Envío CAC</th>
                         <th className="p-3 border">Entrega CAC</th>
                         <th className="p-3 border">Cliente</th>
                         <th className="p-3 border">Teléfono</th>
                         <th className="p-3 border">Marca</th>
-                        <th className="p-3 border">Modelo</th>
-                        <th className="p-3 border">Modelo Sap</th>
-                        <th className="p-3 border">Falla reportada por Tienda</th>
-                        <th className="p-3 border">Reparacion realizada por taller CSA</th>
-                        <th className="p-3 border">Fecha de creacion de Folio</th>
-                        <th className="p-3 border">Fecha de envio por parte tienda CAC</th>
-                        <th className="p-3 border">Motivo por que no aplica</th>
+                        <th className="p-3 border">Modelo SAP</th>
+                        <th className="p-3 border">Falla por Tienda</th>
+                        <th className="p-3 border">Reparación realizada</th>
+                        <th className="p-3 border">Fecha creación Folio</th>
+                        <th className="p-3 border">Fecha envío por tienda</th>
+                        <th className="p-3 border">Motivo no aplica</th>
                         <th className="p-3 border">Técnico</th>
-                        <th className="p-3 border">No. Guía de envío a Cac</th>
-                        <th className="p-3 border">Justificación por que se salio del tiempo</th>
-                        <th className="p-3 border text-center">Días</th>
+                        <th className="p-3 border">No. Guía envío CAC</th>
+                        <th className="p-3 border">Justificación tiempo</th>
+                        <th className="p-3 border">Diferencia SLA</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {reportRows.map((r, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50">
-                          <td className="p-3 border font-bold font-mono text-[#001e6c]">{r.Orden}</td>
+                      {reportRows.slice((reportPage - 1) * reportPageSize, reportPage * reportPageSize).map((r, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50 border-b">
+                          <td className="p-3 border font-bold font-mono text-[#001e6c]">{r['Taller'] || '—'}</td>
                           <td className="p-3 border font-semibold text-slate-700">{r['Oficina Ventas'] || '—'}</td>
                           <td className="p-3 border font-semibold text-slate-700">{r['CAC o Canal'] || '—'}</td>
                           <td className="p-3 border">{r['Tipo Cliente'] || '—'}</td>
@@ -1739,33 +1741,32 @@ export default function DespachoPagina() {
                               'bg-slate-100 text-slate-800'
                             }`}>{r['GAM / NO GAM']}</span>
                           </td>
-                          <td className="p-3 border font-mono font-bold text-slate-800">{r.Imei}</td>
-                          <td className="p-3 border">{r.Falla}</td>
-                          <td className="p-3 border">{r.Garantia}</td>
+                          <td className="p-3 border font-mono font-bold text-slate-800">{r['IMEI'] || '—'}</td>
+                          <td className="p-3 border">{r['Falla'] || '—'}</td>
+                          <td className="p-3 border">{r['Garantía'] || '—'}</td>
                           <td className="p-3 border">
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              r.Estatus === 'REPARADO' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                            }`}>{r.Estatus}</span>
+                              r['Estatus'] === 'REPARADO' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                            }`}>{r['Estatus'] || '—'}</span>
                           </td>
-                          <td className="p-3 border text-slate-500 font-semibold text-[10px]">{r['TIPOS DE GARANTIA'] || '—'}</td>
+                          <td className="p-3 border text-slate-500 font-semibold text-[10px]">{r['Tipos de Garantía'] || '—'}</td>
                           <td className="p-3 border font-mono text-[10px]">{r['Fecha Recepción Taller CSA'] || '—'}</td>
-                          <td className="p-3 border font-mono text-[10px]">{r['Fecha de reparación en CSA'] || '—'}</td>
-                          <td className="p-3 border font-mono text-[10px]">{r['Fecha de Envio CAC'] || '—'}</td>
-                          <td className="p-3 border font-mono text-[10px]">{r['Fecha entrega a CAC'] || '—'}</td>
-                          <td className="p-3 border">{r.Cliente || '—'}</td>
-                          <td className="p-3 border font-mono">{r.Teléfono || '—'}</td>
-                          <td className="p-3 border">{r.Marca || '—'}</td>
-                          <td className="p-3 border">{r.Modelo || '—'}</td>
-                          <td className="p-3 border">{r['Modelo Sap'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha reparación CSA'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha Envío CAC'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha entrega CAC'] || '—'}</td>
+                          <td className="p-3 border">{r['Cliente'] || '—'}</td>
+                          <td className="p-3 border font-mono">{r['Teléfono'] || '—'}</td>
+                          <td className="p-3 border">{r['Marca'] || '—'}</td>
+                          <td className="p-3 border">{r['Modelo SAP'] || '—'}</td>
                           <td className="p-3 border max-w-xs truncate" title={r['Falla reportada por Tienda']}>{r['Falla reportada por Tienda'] || '—'}</td>
-                          <td className="p-3 border max-w-xs truncate" title={r['Reparacion realizada por taller CSA']}>{r['Reparacion realizada por taller CSA'] || '—'}</td>
-                          <td className="p-3 border font-mono text-[10px]">{r['Fecha de creacion de Folio'] || '—'}</td>
-                          <td className="p-3 border font-mono text-[10px]">{r['Fecha de envio por parte tienda CAC'] || '—'}</td>
-                          <td className="p-3 border">{r['motivo por que no aplica'] || '—'}</td>
-                          <td className="p-3 border">{r['Técnico'] || '—'}</td>
-                          <td className="p-3 border font-mono">{r['No. Guia de envio a Cac'] || '—'}</td>
-                          <td className="p-3 border max-w-xs truncate" title={r['Justificación por que se salio del tiempo']}>{r['Justificación por que se salio del tiempo'] || '—'}</td>
-                          <td className="p-3 border text-center font-bold font-mono text-slate-600">{r['Unnamed: 12']}</td>
+                          <td className="p-3 border max-w-xs truncate" title={r['Reparación realizada']}>{r['Reparación realizada'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha creación Folio'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha envío por parte tienda CAC'] || '—'}</td>
+                          <td className="p-3 border">{r['Motivo por que no aplica'] || '—'}</td>
+                          <td className="p-3 border">{r['Usuario o Técnico'] || '—'}</td>
+                          <td className="p-3 border font-mono">{r['No Guía envío CAC'] || '—'}</td>
+                          <td className="p-3 border max-w-xs truncate" title={r['Justificación fuera SLA']}>{r['Justificación fuera SLA'] || '—'}</td>
+                          <td className="p-3 border text-center font-bold font-mono text-slate-600">{r['Diferencia SLA'] || '—'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1787,7 +1788,7 @@ export default function DespachoPagina() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {reportRows.map((r, idx) => (
+                      {reportRows.slice((reportPage - 1) * reportPageSize, reportPage * reportPageSize).map((r, idx) => (
                         <tr key={idx} className="hover:bg-slate-50">
                           <td className="p-3 border font-bold font-mono text-[#001e6c]">{r.conduceId || r['No. Conduce']}</td>
                           <td className="p-3 border text-slate-500 font-mono text-[10px]">{
@@ -1819,6 +1820,33 @@ export default function DespachoPagina() {
                     </tbody>
                   </table>
                 )}
+              </div>
+            )}
+            
+            {!reportLoading && reportRows.length > 0 && (
+              <div className="flex items-center justify-between mt-4">
+                <span className="text-sm text-slate-500">
+                  Mostrando {(reportPage - 1) * reportPageSize + 1} a {Math.min(reportPage * reportPageSize, reportRows.length)} de {reportRows.length} registros
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setReportPage(p => Math.max(1, p - 1))}
+                    disabled={reportPage === 1}
+                    className="px-3 py-1 bg-slate-100 text-slate-600 rounded disabled:opacity-50 font-semibold"
+                  >
+                    Anterior
+                  </button>
+                  <span className="font-bold text-[#001e6c] px-3">
+                    Hoja {reportPage} de {Math.ceil(reportRows.length / reportPageSize)}
+                  </span>
+                  <button
+                    onClick={() => setReportPage(p => Math.min(Math.ceil(reportRows.length / reportPageSize), p + 1))}
+                    disabled={reportPage === Math.ceil(reportRows.length / reportPageSize)}
+                    className="px-3 py-1 bg-[#001e6c] text-white rounded disabled:opacity-50 font-semibold"
+                  >
+                    Siguiente
+                  </button>
+                </div>
               </div>
             )}
           </div>

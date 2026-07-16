@@ -12,7 +12,7 @@ const ROLE_ACCESS: Record<string, string[]> = {
   admin:      ['/', '/despacho', '/admin'],
   supervisor: ['/', '/despacho'],
   despacho:   ['/despacho'],
-  viewer:     ['/'],
+  viewer:     ['/', '/despacho'],
 };
 
 function normalizeText(value: string | null | undefined): string {
@@ -87,8 +87,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // Verificar si puede acceder a la ruta
-  if (pathname.startsWith('/despacho') && role !== 'admin' && !hasArea(accessibleAreas, 'Despacho')) {
+  // /despacho: admin, rol con ruta permitida, O área "Despacho" asignada
+  if (pathname.startsWith('/despacho')) {
+    const allowedByRole = canAccess(role, pathname);
+    const allowedByArea = hasArea(accessibleAreas, 'Despacho');
+    if (role === 'admin' || allowedByRole || allowedByArea) {
+      supabaseResponse.headers.set('x-user-role', role);
+      return supabaseResponse;
+    }
     const url = request.nextUrl.clone();
     url.pathname = '/no-access';
     return NextResponse.redirect(url);

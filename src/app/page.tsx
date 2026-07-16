@@ -6041,6 +6041,19 @@ export default function DashboardMultimodular() {
         </div>
       </Flex>
 
+      <div className="mb-4 flex justify-end">
+        {(canSeeAllAreas || canSeeArea('Despacho')) && (
+          <Link
+            href="/despacho"
+            prefetch
+            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+          >
+            <Truck className="w-3.5 h-3.5" />
+            Módulo de Despacho
+          </Link>
+        )}
+      </div>
+
       <TabGroup>
         <TabList className="mb-8" variant="solid">
           <Tab icon={BarChart3}>📊 Gerencial</Tab>
@@ -6051,17 +6064,6 @@ export default function DashboardMultimodular() {
           <Tab className={canSeeArea('ERP Xiaomi') ? '' : 'hidden'} icon={CreditCard}>⚙️ ERP Xiaomi</Tab>
           <Tab className={canSeeAnyArea('Bono Técnico', 'Taller') ? '' : 'hidden'} icon={Activity}>🏅 Bono Técnico</Tab>
         </TabList>
-        <div className="flex justify-end px-4 pb-2">
-          {(canSeeAllAreas || canSeeArea('Despacho')) && (
-            <Link
-              href="/despacho"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
-            >
-              <Truck className="w-3.5 h-3.5" />
-              Módulo de Despacho
-            </Link>
-          )}
-        </div>
 
         <TabPanels>
           {/* --- PESTAÑA 1: GERENCIAL --- */}
