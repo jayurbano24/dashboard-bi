@@ -6043,14 +6043,13 @@ export default function DashboardMultimodular() {
 
       <div className="mb-4 flex justify-end">
         {(canSeeAllAreas || canSeeArea('Despacho')) && (
-          <Link
+          <a
             href="/despacho"
-            prefetch
             className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
           >
             <Truck className="w-3.5 h-3.5" />
             Módulo de Despacho
-          </Link>
+          </a>
         )}
       </div>
 
