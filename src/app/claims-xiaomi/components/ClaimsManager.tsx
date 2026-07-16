@@ -183,6 +183,9 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
   const [selectedGroup, setSelectedGroup] = useState<string>('TODOS');
 
   const [fallasDb, setFallasDb] = useState<any[]>([]);
+  
+  // Estado para la sincronización de repuestos desde bodega (Orderry)
+  const [isSyncingParts, setIsSyncingParts] = useState(false);
   const [verdictsDb, setVerdictsDb] = useState<any[]>([]);
 
   // Estados del modal de edición
@@ -239,11 +242,21 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
     const fecha_cierre = row.fecha_cierre || row['Completado en'] || row['Cerrado'] || row['Fecha de vencimiento'] || 46183.575;
 
     // 8. Diagnóstico de Cierre y Repuestos
-    // Extraer desde Excel (Veredicto/Estado) o desde API (status.name, engineer_notes, manager_notes)
+    // Combinar todos los campos de texto relevantes para tener más contexto al buscar palabras clave
+    const fullTextContext = [
+      row.veredicto_tecnico,
+      row['Veredicto / recomendaciones del cliente'],
+      row['Estado'],
+      row.status?.name,
+      row.engineer_notes,
+      row.manager_notes,
+      row.servicios_obras,
+      row['Servicios/Obras'],
+      row.resume
+    ].filter(Boolean).join(' ').toUpperCase();
+
     const veredicto_tecnico = String(row.veredicto_tecnico || row['Veredicto / recomendaciones del cliente'] || row['Estado'] || row.status?.name || row.engineer_notes || row.manager_notes || '');
-    
-    // Extraer repuestos desde Excel (Productos) o desde los comentarios del ingeniero en la API
-    const repuestos_utilizados = String(row.repuestos_utilizados || row['Productos'] || row.engineer_notes || row.manager_notes || '');
+    const repuestos_utilizados = String(row.repuestos_utilizados || row['Productos'] || '');
 
     // 9. Tipo de orden e ingreso (IW_OOW y customer_type)
     const tipo_ingreso = String(row['TIPO DE INGRESO'] || row.tipo_ingreso || row.custom_fields?.tipo_ingreso || 'Walk-in');
@@ -295,13 +308,11 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
     const time_close = dClose;
 
     const format = (date: any) => {
-      if (scConfig.dateExportFormat === 'serial') {
-        return dateToExcelSerial(date).toString();
-      }
+      // El usuario solicitó dejar el formato de exportación fijo a String Texto (YYYY-MM-DD HH:mm:ss)
       return formatDateTimeString(date);
     };
 
-    const matchedVerdict = verdictsDb.find(v => veredicto_tecnico.toUpperCase().includes(v.veredicto.toUpperCase()));
+    const matchedVerdict = verdictsDb.find(v => fullTextContext.includes(v.veredicto.toUpperCase()));
     let isRepair = false;
     let serviceTypeString = 'Inspection';
     let processingMethod = '3001';
@@ -311,16 +322,64 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
       processingMethod = matchedVerdict.processing_method;
       isRepair = serviceTypeString === 'Repair';
     } else {
-      if (row.serviceType === 'Repair') isRepair = true;
-      else if (repuestos_utilizados && repuestos_utilizados.trim().length > 0) isRepair = true;
-      else if (veredicto_tecnico.toUpperCase().includes('REPARAD') || veredicto_tecnico.toUpperCase().includes('MANTENIMIENTO')) isRepair = true;
+      const hasParts = repuestos_utilizados.trim().length > 0;
+      const hasServices = servicios_obras.trim().length > 0;
       
-      if (veredicto_tecnico.toUpperCase().includes('CREDITO') || veredicto_tecnico.toUpperCase().includes('NC')) {
-        isRepair = false;
+      // Lógica por defecto (Repair)
+      if (row.serviceType === 'Repair') isRepair = true;
+      else if (hasParts || hasServices) isRepair = true;
+      else if (fullTextContext.includes('REPARAD') || fullTextContext.includes('MANTENIMIENTO')) isRepair = true;
+      
+      // Lógica de Sobre-escritura MUY estricta para Notas de Crédito / Cambios (Inspection)
+      // Si el equipo fue cambiado o es nota de crédito, NUNCA debe ser Repair.
+      if (
+        fullTextContext.includes('NOTA DE CREDITO') || 
+        fullTextContext.includes('CAMBIO EN AGENCIA') ||
+        fullTextContext.includes(' DEVOLUCION ') ||
+        fullTextContext.includes(' NC ') ||
+        fullTextContext.startsWith('NC ') ||
+        fullTextContext.match(/\bNC\b/)
+      ) {
+        // A menos que explícitamente se mencione "ACTUALIZACION DE SOFTWARE" sin ser un cambio
+        if (!fullTextContext.includes('ACTUALIZACION DE SOFTWARE') || fullTextContext.includes('CAMBIO EN AGENCIA')) {
+          isRepair = false;
+        }
       }
-      serviceTypeString = isRepair ? 'Repair' : 'Inspection';
-      processingMethod = isRepair ? '5001' : '3001';
+      
+      if (isRepair) {
+        serviceTypeString = 'Repair';
+        processingMethod = '5001';
+      } else {
+        // Si no es reparación y es OOW (Fuera de Garantía), es un rechazo de presupuesto
+        if (iw_oow === 'OOW' || fullTextContext.includes('ESPERANDO APROBACION') || fullTextContext.includes('NO ACEPTADO') || fullTextContext.includes('RECHAZADO')) {
+          serviceTypeString = 'Return without repair';
+          processingMethod = '3001';
+        } else {
+          // Si no es reparación y es IW (En Garantía), es un Swap / NC / Inspection
+          serviceTypeString = 'Inspection';
+          processingMethod = '3001';
+        }
+      }
     }
+
+    // Extraer todo el texto de eventos, historial y comentarios de la orden
+    const historySources = [row.status_history, row.history, row.timeline, row.events, row.comments].filter(Array.isArray).flat();
+    const historyText = historySources.map((entry: any) => {
+      if (typeof entry === 'string') return entry;
+      if (typeof entry === 'object' && entry !== null) {
+        return Object.values(entry).filter(v => typeof v === 'string').join(' ');
+      }
+      return '';
+    }).join(' ');
+
+    // Extracción de Nuevo IMEI (para cambios de PCBA / Swap)
+    // Busca secuencias de 15 dígitos (IMEI estándar) en Productos, Servicios y en la Línea de Tiempo
+    const allPossibleImeis = (repuestos_utilizados + ' ' + servicios_obras + ' ' + historyText).match(/\b\d{15}\b/g) || [];
+    const new_imei = allPossibleImeis.find(imei => imei !== imei_sn) || '';
+    
+    // Extracción de GoodID personalizado de Orderry
+    const orderryGoodId = String(row.custom_fields?.GoodID || row.custom_fields?.['Good ID'] || row.custom_fields?.['GoodID '] || row['GoodID'] || row['Good ID'] || '');
+    const final_good_id = orderryGoodId.trim() !== '' && orderryGoodId !== 'undefined' ? orderryGoodId : matchedPCBA.codigoProducto;
 
     const columnsMap: Record<string, string> = {
       'service_order_status': 'Closed',
@@ -342,9 +401,9 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
       'Malfunction_Description': matchedFalla.ingles,
       'invoice_number': matchedFalla.codigo,
       'invoice_time': format(excelSerialToDate(fecha_pop)),
-      'goods_id': matchedPCBA.codigoProducto,
+      'goods_id': final_good_id,
       'SN_Or_IMEI1': imei_sn, 
-      'newSN_Or_IMEI1': '',
+      'newSN_Or_IMEI1': new_imei,
       'Is_user_damange': 'No',
       'Accept_satisfaction_survey': '',
       'create_time': format(time_create),
@@ -363,33 +422,57 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
       'processing_method_code': processingMethod,
       'Activity_Project': '',
       'remark': 'Garantia Cobrada',
-      'defect_description': [notas_especialista, servicios_obras].filter(x => x.trim().length > 0).join(' - ') || matchedFalla.ingles,
+      'defect_description': matchedFalla.ingles,
       'whether_to_write_the_number': '',
     };
 
-    // Extraer array de SKUs (Partes) del campo Productos (repuestos_utilizados)
-    const partesArray = repuestos_utilizados.split(/[,;\n]+/).map((s: string) => s.trim()).filter(Boolean);
+    // Extraer array de SKUs (Partes) del campo Productos, Servicios y Eventos de Timeline
+    const extractSku = (partStr: string) => {
+      let clean = partStr.replace(/^(SKU:|NEW|REPUESTO)\s*/i, '').trim();
+      const matches = Array.from(clean.matchAll(/\b([A-Z0-9]{8,15})\b/gi));
+      for (const m of matches) {
+        const candidate = m[1].toUpperCase();
+        // Es válido si NO son solo 15 dígitos (IMEI) y CONTIENE al menos un número (evita palabras regulares)
+        if (!/^\d{15}$/.test(candidate) && /\d/.test(candidate)) {
+          return candidate; 
+        }
+      }
+      const fallback = clean.split(/[- ]/)[0].toUpperCase();
+      // El fallback también debe contener al menos un número
+      return fallback.length > 4 && !/^\d{15}$/.test(fallback) && /\d/.test(fallback) ? fallback : null;
+    };
+
+    const allItems = [repuestos_utilizados, servicios_obras, historyText].filter(Boolean).join(',');
+    const partesArray = Array.from(new Set(
+      allItems.split(/[,;\n]+/).map(extractSku).filter(Boolean)
+    ));
 
     // Mapear hasta 8 partes
     for (let i = 1; i <= 8; i++) {
       let partSku = '';
-      if (isRepair) {
-        if (partesArray[i - 1]) {
-          partSku = partesArray[i - 1]; // Usar la parte detectada
-        } else if (i === 1 && partesArray.length === 0) {
-          partSku = matchedPCBA.codigo; // Fallback al PCBA por defecto solo si no hay repuestos
-        }
+      if (isRepair && partesArray[i - 1]) {
+        partSku = partesArray[i - 1]; // Usar la parte detectada
       }
 
       columnsMap[`old_PN${i}`] = partSku;
-      columnsMap[`old_SN${i}_Or_IMEI${i}`] = partSku;
       columnsMap[`new_PN${i}`] = partSku;
-      columnsMap[`new_SN${i}_Or_IMEI${i}`] = partSku;
+      
+      // Lógica estricta de IMEI para el repuesto principal (Swap de PCBA)
+      // Si extrajimos un IMEI nuevo (new_imei), el IMEI original va en old_SN1 y el nuevo en new_SN1
+      if (i === 1 && new_imei) {
+        columnsMap[`old_SN${i}_Or_IMEI${i}`] = imei_sn;
+        columnsMap[`new_SN${i}_Or_IMEI${i}`] = new_imei;
+      } else {
+        // De lo contrario, queda vacío. NUNCA enviar el SKU aquí.
+        columnsMap[`old_SN${i}_Or_IMEI${i}`] = '';
+        columnsMap[`new_SN${i}_Or_IMEI${i}`] = '';
+      }
     }
 
     return {
       id_local: `claim-${index}-${id_orden}`,
       orderId: id_orden,
+      orderry_id: row.orderry_id,
       cliente: cliente,
       originalModel: modelo,
       fallaOriginal: falla_reportada,
@@ -445,6 +528,7 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
         const mappedFromAPI = filteredOrders.map((row: any, i: number) => {
            const transformed = {
              ...row,
+             "orderry_id": row.id,
              "label": row.number || row.label || row.id_label,
              "Orden #": row.number || row.label || row.id_label || row.id,
              "Nombre del cliente": row.client?.name || row.customer?.name || "",
@@ -456,7 +540,13 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
              "Creado en": row.created_at || row.date_added || Date.now(),
              "Cerrado": row.closed_at || row.closed || Date.now(),
              "Estado": row.status?.name || "",
-             "Productos": (row.parts || []).map((p: any) => p.name || p.title || p).join(', ')
+             "Productos": [
+               ...(row.parts || []), 
+               ...(row.materials || []), 
+               ...(row.products || []), 
+               ...(row.items || [])
+             ].map((p: any) => p.name || p.title || p).join(', '),
+             "Servicios/Obras": (row.operations || []).map((o: any) => o.name || o.title || o).join(', ')
            };
            return autoPopulateAllColumns(transformed, i);
         }).filter(Boolean);
@@ -623,6 +713,64 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
     setTimeout(() => setNotification(null), 3000);
   };
 
+  const handleSyncParts = async () => {
+    setIsSyncingParts(true);
+    showToast('Sincronizando repuestos reales desde Orderry...');
+    
+    // Solo sincronizar órdenes que sean Repair y tengan orderry_id
+    const repairClaims = filteredClaims.filter(c => c.serviceType === 'Repair' && c.orderry_id);
+    
+    if (repairClaims.length === 0) {
+      showToast('No hay reclamos tipo Repair para sincronizar repuestos.');
+      setIsSyncingParts(false);
+      return;
+    }
+    
+    // Extraer solo los IDs únicos
+    const orderIds = Array.from(new Set(repairClaims.map(c => c.orderry_id))).join(',');
+    
+    try {
+      // Llamar al endpoint que creamos previamente para la bodega que consulta /products de Orderry
+      const res = await fetch('/api/bodega/parts-demand?order_ids=' + orderIds);
+      if (res.ok) {
+        const data = await res.json();
+        
+        if (data.orderProducts) {
+          setClaims(prev => prev.map(claim => {
+            // Si la orden no tiene repuestos o no es esta, se deja intacta
+            if (!claim.orderry_id || !data.orderProducts[claim.orderry_id]) return claim;
+            
+            const parts = data.orderProducts[claim.orderry_id];
+            if (parts.length === 0) return claim;
+
+            const newColumns = { ...claim.columns };
+            let partIndex = 1; // old_PN1 a old_PN8
+            
+            // Asignar los SKUs reales encontrados en Orderry /products
+            parts.forEach((part: any) => {
+              if (partIndex <= 8) {
+                // part.code suele tener el SKU puro extraído en el endpoint de bodega
+                newColumns[`old_PN${partIndex}`] = part.code || part.sku;
+                partIndex++;
+              }
+            });
+            
+            return { ...claim, columns: newColumns };
+          }));
+          showToast('¡Repuestos de servicios sincronizados con éxito!');
+        } else {
+          showToast('No se encontraron repuestos adicionales.');
+        }
+      } else {
+        showToast('Error al conectar con la bodega de Orderry.');
+      }
+    } catch (e) {
+      showToast('Ocurrió un error en la sincronización de repuestos.');
+    }
+    
+    setIsSyncingParts(false);
+  };
+
   const handleDownloadCSV = (filterType: string) => {
     const items = filteredClaims.filter(c => filterType === 'ALL' || c.serviceType === filterType);
     if (items.length === 0) {
@@ -691,6 +839,14 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
           </select>
 
           <button
+            onClick={handleSyncParts}
+            disabled={isSyncingParts}
+            className={`${isSyncingParts ? 'bg-slate-700 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-500'} text-white font-bold text-xs px-4 py-2 rounded-xl transition-all flex items-center gap-2`}
+          >
+            {isSyncingParts ? '⏳ Sincronizando...' : '⬇️ Extraer Piezas (Servicios)'}
+          </button>
+
+          <button
             onClick={() => handleDownloadCSV('ALL')}
             className="bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs px-4 py-2 rounded-xl transition-all"
           >
@@ -730,6 +886,12 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
             <span className="text-[10px] text-slate-400 font-bold uppercase">Notas de Crédito (Inspection)</span>
             <span className="text-2xl font-black text-blue-400 mt-1">
               {filteredClaims.filter(c => c.serviceType === 'Inspection').length}
+            </span>
+          </div>
+          <div className="bg-slate-950 border border-slate-800 p-4 rounded-2xl flex flex-col justify-between">
+            <span className="text-[10px] text-slate-400 font-bold uppercase">Rechazos OOW (Return)</span>
+            <span className="text-2xl font-black text-rose-400 mt-1">
+              {filteredClaims.filter(c => c.serviceType === 'Return without repair').length}
             </span>
           </div>
           <div className="bg-slate-950 border border-slate-800 p-4 rounded-2xl flex flex-col justify-between">
@@ -833,10 +995,17 @@ export default function ClaimsManager({ ordersData = [] }: { ordersData?: any[] 
                         className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all ${
                           claim.serviceType === 'Repair'
                             ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                            : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                            : claim.serviceType === 'Return without repair'
+                              ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                              : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
                         }`}
                       >
-                        {claim.serviceType === 'Repair' ? '🛠️ REPARADO' : '📋 NC'}
+                        {claim.serviceType === 'Repair' 
+                          ? '🛠️ REPARADO' 
+                          : claim.serviceType === 'Return without repair' 
+                            ? '❌ RECHAZO OOW' 
+                            : '📋 NC'
+                        }
                       </button>
                     </td>
                     <td className="px-4 py-3 border-r border-slate-800 text-center">

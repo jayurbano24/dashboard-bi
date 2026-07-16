@@ -367,7 +367,7 @@ export const saveDespachoConduce = async (conduce: any) => {
     imei: String(unit?.imei || ''),
     serie: String(unit?.serie || ''),
     order_id: unit?.orderId ? String(unit.orderId) : null,
-    order_name: String(unit?.orderName || ''),
+    order_name: String(unit?.orderName || unit?.ordenNumero || ''),
     marca: String(unit?.marca || ''),
     modelo: String(unit?.modelo || ''),
     grupo: String(unit?.grupo || ''),
@@ -722,3 +722,557 @@ export const getBackofficePrealertRowsFromGoogleSheets = async (): Promise<Backo
 
   return allRows;
 };
+
+export const getDespachoReportRows = async (filters?: {
+  startDate?: string;
+  endDate?: string;
+  searchTerm?: string;
+  dealer?: string;
+  courrier?: string;
+  marca?: string;
+  modelo?: string;
+  doa?: string;
+}) => {
+  const supabase = getSupabaseAdmin();
+  let query = supabase.from('despacho_conduce_rows').select('*');
+
+  if (filters?.startDate) {
+    query = query.gte('fecha', filters.startDate);
+  }
+  if (filters?.endDate) {
+    query = query.lte('fecha', filters.endDate);
+  }
+  if (filters?.dealer && filters.dealer !== 'ALL') {
+    query = query.eq('dealer', filters.dealer);
+  }
+  if (filters?.courrier && filters.courrier !== 'ALL') {
+    query = query.eq('courrier', filters.courrier);
+  }
+  if (filters?.marca && filters.marca !== 'ALL') {
+    query = query.eq('marca', filters.marca);
+  }
+  if (filters?.modelo && filters.modelo !== 'ALL') {
+    query = query.eq('modelo', filters.modelo);
+  }
+  if (filters?.doa && filters.doa !== 'ALL') {
+    query = query.eq('doa', filters.doa === 'true');
+  }
+
+  const { data, error } = await query.order('fecha', { ascending: false }).limit(3000);
+  throwIfError(error, 'despacho_conduce_rows');
+
+  let rows = data || [];
+  if (filters?.searchTerm) {
+    const search = filters.searchTerm.toLowerCase().trim();
+    rows = rows.filter((r: any) => {
+      return (
+        String(r.imei || '').toLowerCase().includes(search) ||
+        String(r.conduce_id || '').toLowerCase().includes(search) ||
+        String(r.numero_guia || '').toLowerCase().includes(search) ||
+        String(r.precinto || '').toLowerCase().includes(search) ||
+        String(r.modelo || '').toLowerCase().includes(search) ||
+        String(r.marca || '').toLowerCase().includes(search) ||
+        String(r.dealer || '').toLowerCase().includes(search) ||
+        String(r.payload?.despachadoPor || '').toLowerCase().includes(search)
+      );
+    });
+  }
+
+  return rows.map((row: any) => ({
+    conduceId: String(row.conduce_id || ''),
+    fecha: String(row.fecha || ''),
+    doa: Boolean(row.doa),
+    courrier: String(row.courrier || ''),
+    numeroGuia: String(row.numero_guia || ''),
+    precinto: String(row.precinto || ''),
+    origen: String(row.origen || ''),
+    operador: String(row.operador || ''),
+    retail: String(row.retail || ''),
+    dealer: String(row.dealer || ''),
+    sucursal: String(row.sucursal || ''),
+    imei: String(row.imei || ''),
+    serie: String(row.serie || ''),
+    orderId: row.order_id ? Number(row.order_id) : null,
+    orderName: String(row.order_name || row.payload?.ordenNumero || row.payload?.order_name || ''),
+    marca: String(row.marca || ''),
+    modelo: String(row.modelo || ''),
+    grupo: String(row.grupo || ''),
+    estado: String(row.estado || ''),
+    despachadoPor: String(row.payload?.despachadoPor || ''),
+    created_at: row.payload?.created_at || row.created_at || null,
+    closed_at: row.payload?.closed_at || null,
+    done_at: row.payload?.done_at || null,
+    fecha_reparacion: row.payload?.done_at || null,
+    completado_en: row.fecha || null,
+    fecha_entrega: row.fecha || null,
+    cliente: row.payload?.cliente || '',
+    telefono: row.payload?.telefono || '',
+    falla: row.payload?.['Mal funcionamiento *'] || row.payload?.['Mal funcionamiento'] || row.payload?.malFuncionamiento || row.payload?.falla || row.falla || '',
+    serviciosObras: row.payload?.serviciosObras || '',
+    marcaDispositivo: row.payload?.marcaDispositivo || row.marca || '',
+    modeloDispositivo: row.payload?.modeloDispositivo || row.modelo || '',
+    modeloSap: row.payload?.modeloSap || '',
+    canalIngreso: row.payload?.canalIngreso || row.origen || row.dealer || row.sucursal || '',
+    tipoIngreso: row.payload?.tipoIngreso || row.operador || row.retail || row.dealer || '',
+    fechaEnvioTienda: row.payload?.fechaEnvioTienda || '',
+    motivoNoAplica: row.payload?.motivoNoAplica || '',
+    tecnico: row.payload?.tecnico || '',
+    justificacionTiempo: row.payload?.justificacionTiempo || '',
+    garantia: row.payload?.garantia || '',
+    tipo_orden: row.payload?.tipoOrden || '',
+    folioPdv: row.payload?.['FOLIO PDV'] || row.payload?.folioPdv || '',
+    fechaFacturacion: row.payload?.['FECHA DE VENTA -POP *'] || row.payload?.['FECHA DE VENTA -POP'] || row.payload?.fechaVentaPop || row.payload?.['Fecha de venta -pop'] || row.payload?.['Fecha de Venta -POP'] || row.payload?.fechaFacturacion || '',
+    fechaActivacion: row.payload?.fechaActivacion || '',
+  }));
+};
+
+export const getSapEquipos = async (filters?: {
+  startDate?: string;
+  endDate?: string;
+  searchTerm?: string;
+}) => {
+  const supabase = getSupabaseAdmin();
+  let query = supabase.from('despacho_sap_equipos').select('*');
+
+  if (filters?.startDate) {
+    query = query.gte('dia', filters.startDate);
+  }
+  if (filters?.endDate) {
+    query = query.lte('dia', filters.endDate);
+  }
+
+  const { data, error } = await query.order('dia', { ascending: false }).limit(2000);
+  
+  if (error && isMissingTableError(error)) {
+    return [];
+  }
+  throwIfError(error, 'despacho_sap_equipos');
+
+  let rows = data || [];
+  if (filters?.searchTerm) {
+    const search = filters.searchTerm.toLowerCase().trim();
+    rows = rows.filter((r: any) => {
+      return (
+        String(r.imei_fisico || '').toLowerCase().includes(search) ||
+        String(r.no_documento || '').toLowerCase().includes(search) ||
+        String(r.agencia || '').toLowerCase().includes(search) ||
+        String(r.marca || '').toLowerCase().includes(search) ||
+        String(r.modelo || '').toLowerCase().includes(search) ||
+        String(r.guia || '').toLowerCase().includes(search) ||
+        String(r.comentario || '').toLowerCase().includes(search)
+      );
+    });
+  }
+
+  return rows.map((r: any) => ({
+    id: String(r.id),
+    agencia: String(r.agencia || ''),
+    imeiFisico: String(r.imei_fisico || ''),
+    noDocumento: String(r.no_documento || ''),
+    marca: String(r.marca || ''),
+    modelo: String(r.modelo || ''),
+    guia: String(r.guia || ''),
+    dia: String(r.dia || ''),
+    comentario: String(r.comentario || ''),
+    createdAt: String(r.created_at || ''),
+  }));
+};
+
+export const saveSapEquipos = async (equipos: any[]) => {
+  if (!Array.isArray(equipos) || equipos.length === 0) {
+    throw new Error('Arreglo de equipos SAP vacío o inválido.');
+  }
+
+  const supabase = getSupabaseAdmin();
+  const rows = equipos.map((e) => ({
+    agencia: String(e.agencia || '').trim(),
+    imei_fisico: String(e.imeiFisico || '').trim(),
+    no_documento: String(e.noDocumento || '').trim(),
+    marca: String(e.marca || '').trim(),
+    modelo: String(e.modelo || '').trim(),
+    guia: String(e.guia || '').trim(),
+    dia: String(e.dia || new Date().toISOString().slice(0, 10)),
+    comentario: String(e.comentario || 'ACEPTADO').trim(),
+  }));
+
+  const { data, error } = await supabase
+    .from('despacho_sap_equipos')
+    .insert(rows)
+    .select();
+
+  if (error && isMissingTableError(error)) {
+    throw new Error('La tabla despacho_sap_equipos no ha sido creada en Supabase. Corre la migración SQL.');
+  }
+  
+  if (error && String(error.code) === '23505') {
+    throw new Error('Uno o más IMEIs ingresados ya existen en el registro de equipos SAP.');
+  }
+
+  throwIfError(error, 'despacho_sap_equipos');
+  return data?.length || rows.length;
+};
+
+export const deleteSapEquipo = async (id: string) => {
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase.from('despacho_sap_equipos').delete().eq('id', id);
+  throwIfError(error, 'despacho_sap_equipos');
+  return true;
+};
+
+// ── SAP Module v2 ────────────────────────────────────────────────────────────
+
+const mapSapEquipoRow = (r: Record<string, unknown>) => ({
+  id: String(r.id),
+  loteId: r.lote_id ? String(r.lote_id) : null,
+  agencia: String(r.agencia || ''),
+  imeiFisico: String(r.imei_fisico || ''),
+  noDocumento: String(r.no_documento || ''),
+  marca: String(r.marca || ''),
+  modelo: String(r.modelo || ''),
+  guia: String(r.guia || ''),
+  notaEntrega: String(r.nota_entrega || r.guia || ''),
+  dia: String(r.dia || ''),
+  comentario: String(r.comentario || ''),
+  material: String(r.material || ''),
+  fechaAceptacion: String(r.fecha_aceptacion || r.dia || ''),
+  numeroTraslado: String(r.numero_traslado || ''),
+  razonNoOrderry: String(r.razon_no_orderry || ''),
+  observacionesNoOrderry: String(r.observaciones_no_orderry || ''),
+  fechaEntrega: r.fecha_entrega ? String(r.fecha_entrega) : null,
+  conduce: String(r.conduce || ''),
+  transportista: String(r.transportista || ''),
+  recibidoPor: String(r.recibido_por || ''),
+  estado: String(r.estado || 'GUARDADO SAP'),
+  orderId: r.order_id != null ? Number(r.order_id) : null,
+  cliente: String(r.cliente || ''),
+  orderryStatus: String(r.orderry_status || ''),
+  usuarioRegistro: String(r.usuario_registro || ''),
+  foundInOrderry: !r.razon_no_orderry,
+  createdAt: String(r.created_at || ''),
+  updatedAt: String(r.updated_at || r.created_at || ''),
+});
+
+export const findSapEquiposByImeis = async (imeis: string[]) => {
+  if (!imeis.length) return [];
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('despacho_sap_equipos')
+    .select('*')
+    .in('imei_fisico', imeis.map((i) => i.trim()));
+  if (error && isMissingTableError(error)) return [];
+  throwIfError(error, 'despacho_sap_equipos');
+  return (data || []).map(mapSapEquipoRow);
+};
+
+export const insertSapLote = async (meta: {
+  material: string;
+  fechaAceptacion: string;
+  numeroTraslado: string;
+  notaEntrega: string;
+  usuario: string;
+  estado: string;
+}) => {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('despacho_sap_lotes')
+    .insert({
+      material: meta.material,
+      fecha_aceptacion: meta.fechaAceptacion,
+      numero_traslado: meta.numeroTraslado,
+      nota_entrega: meta.notaEntrega,
+      usuario_registro: meta.usuario,
+      estado: meta.estado,
+    })
+    .select('*')
+    .single();
+  if (error && isMissingTableError(error)) {
+    throw new Error('Ejecute la migración 2026-sap-module-v2.sql en Supabase.');
+  }
+  throwIfError(error, 'despacho_sap_lotes');
+  return {
+    id: String(data.id),
+    material: String(data.material),
+    fechaAceptacion: String(data.fecha_aceptacion),
+    numeroTraslado: String(data.numero_traslado || ''),
+    notaEntrega: String(data.nota_entrega || ''),
+    estado: String(data.estado),
+    fechaEntrega: data.fecha_entrega ? String(data.fecha_entrega) : null,
+    conduce: String(data.conduce || ''),
+    transportista: String(data.transportista || ''),
+    recibidoPor: String(data.recibido_por || ''),
+    observacionesDespacho: String(data.observaciones_despacho || ''),
+    usuarioRegistro: String(data.usuario_registro || ''),
+    createdAt: String(data.created_at),
+  };
+};
+
+export const insertSapEquiposV2 = async (
+  loteId: string,
+  equipos: Array<Record<string, unknown>>,
+  meta: { material: string; fechaAceptacion: string; numeroTraslado: string; notaEntrega: string; usuario: string },
+) => {
+  const supabase = getSupabaseAdmin();
+  const rows = equipos.map((e) => ({
+    lote_id: loteId,
+    agencia: String(e.agencia || '').trim(),
+    imei_fisico: String(e.imeiFisico || '').trim(),
+    no_documento: String(e.noDocumento || '').trim(),
+    marca: String(e.marca || '').trim(),
+    modelo: String(e.modelo || '').trim(),
+    guia: String(e.notaEntrega || e.guia || meta.notaEntrega || '').trim(),
+    nota_entrega: String(e.notaEntrega || e.guia || meta.notaEntrega || '').trim(),
+    dia: String(e.fechaAceptacion || meta.fechaAceptacion),
+    fecha_aceptacion: String(e.fechaAceptacion || meta.fechaAceptacion),
+    comentario: String(e.comentario || 'ACEPTADO').trim(),
+    material: String(e.material || meta.material).trim(),
+    numero_traslado: String(e.numeroTraslado || meta.numeroTraslado || '').trim(),
+    razon_no_orderry: e.foundInOrderry ? null : String(e.razonNoOrderry || '').trim() || null,
+    observaciones_no_orderry: e.foundInOrderry ? null : String(e.observacionesNoOrderry || '').trim() || null,
+    order_id: e.orderId != null ? Number(e.orderId) : null,
+    cliente: String(e.cliente || '').trim(),
+    orderry_status: String(e.orderryStatus || '').trim(),
+    usuario_registro: meta.usuario,
+    estado: 'GUARDADO SAP',
+  }));
+
+  const { data, error } = await supabase.from('despacho_sap_equipos').insert(rows).select('*');
+  if (error && isMissingTableError(error)) {
+    throw new Error('La tabla despacho_sap_equipos no ha sido creada en Supabase.');
+  }
+  if (error && String(error.code) === '23505') {
+    throw new Error('Uno o más IMEIs ingresados ya existen en el registro de equipos SAP.');
+  }
+  throwIfError(error, 'despacho_sap_equipos');
+  return (data || []).map(mapSapEquipoRow);
+};
+
+export const getSapEquiposV2 = async (filters?: {
+  startDate?: string;
+  endDate?: string;
+  searchTerm?: string;
+  loteId?: string;
+  estado?: string;
+}) => {
+  const supabase = getSupabaseAdmin();
+  let query = supabase.from('despacho_sap_equipos').select('*');
+  if (filters?.startDate) query = query.gte('fecha_aceptacion', filters.startDate);
+  if (filters?.endDate) query = query.lte('fecha_aceptacion', filters.endDate);
+  if (filters?.loteId) query = query.eq('lote_id', filters.loteId);
+  if (filters?.estado) query = query.eq('estado', filters.estado);
+  const { data, error } = await query.order('created_at', { ascending: false }).limit(2000);
+  if (error && isMissingTableError(error)) return [];
+  throwIfError(error, 'despacho_sap_equipos');
+  let rows = (data || []).map(mapSapEquipoRow);
+  if (filters?.searchTerm) {
+    const search = filters.searchTerm.toLowerCase().trim();
+    rows = rows.filter((r) =>
+      [r.imeiFisico, r.noDocumento, r.agencia, r.marca, r.modelo, r.material, r.notaEntrega, r.comentario]
+        .some((v) => String(v).toLowerCase().includes(search)),
+    );
+  }
+  return rows;
+};
+
+export const updateSapEquiposDispatch = async (
+  loteId: string,
+  payload: { fechaEntrega: string; conduce: string; transportista: string; recibidoPor: string; estado: string },
+) => {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('despacho_sap_equipos')
+    .update({
+      fecha_entrega: payload.fechaEntrega,
+      conduce: payload.conduce,
+      transportista: payload.transportista,
+      recibido_por: payload.recibidoPor,
+      estado: payload.estado,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('lote_id', loteId)
+    .select('*');
+  throwIfError(error, 'despacho_sap_equipos');
+  return (data || []).map(mapSapEquipoRow);
+};
+
+export const getSapLoteById = async (id: string) => {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.from('despacho_sap_lotes').select('*').eq('id', id).maybeSingle();
+  if (error && isMissingTableError(error)) return null;
+  throwIfError(error, 'despacho_sap_lotes');
+  if (!data) return null;
+  return {
+    id: String(data.id),
+    material: String(data.material),
+    fechaAceptacion: String(data.fecha_aceptacion),
+    numeroTraslado: String(data.numero_traslado || ''),
+    notaEntrega: String(data.nota_entrega || ''),
+    estado: String(data.estado),
+    fechaEntrega: data.fecha_entrega ? String(data.fecha_entrega) : null,
+    conduce: String(data.conduce || ''),
+    transportista: String(data.transportista || ''),
+    recibidoPor: String(data.recibido_por || ''),
+    observacionesDespacho: String(data.observaciones_despacho || ''),
+    usuarioRegistro: String(data.usuario_registro || ''),
+    createdAt: String(data.created_at),
+  };
+};
+
+export const updateSapLoteDispatch = async (
+  id: string,
+  payload: { fechaEntrega: string; conduce: string; transportista?: string; recibidoPor?: string; observaciones?: string },
+) => {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('despacho_sap_lotes')
+    .update({
+      fecha_entrega: payload.fechaEntrega,
+      conduce: payload.conduce.trim(),
+      transportista: payload.transportista?.trim() ?? '',
+      recibido_por: payload.recibidoPor?.trim() ?? '',
+      observaciones_despacho: payload.observaciones?.trim() ?? '',
+      estado: 'ENTREGADO SAP',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select('*')
+    .single();
+  throwIfError(error, 'despacho_sap_lotes');
+  return {
+    id: String(data.id),
+    material: String(data.material),
+    fechaAceptacion: String(data.fecha_aceptacion),
+    numeroTraslado: String(data.numero_traslado || ''),
+    notaEntrega: String(data.nota_entrega || ''),
+    estado: String(data.estado),
+    fechaEntrega: data.fecha_entrega ? String(data.fecha_entrega) : null,
+    conduce: String(data.conduce || ''),
+    transportista: String(data.transportista || ''),
+    recibidoPor: String(data.recibido_por || ''),
+    observacionesDespacho: String(data.observaciones_despacho || ''),
+    usuarioRegistro: String(data.usuario_registro || ''),
+    createdAt: String(data.created_at),
+  };
+};
+
+export const listSapLotes = async (filters?: { estado?: string }) => {
+  const supabase = getSupabaseAdmin();
+  let query = supabase.from('despacho_sap_lotes').select('*');
+  if (filters?.estado) query = query.eq('estado', filters.estado);
+  const { data, error } = await query.order('created_at', { ascending: false }).limit(500);
+  if (error && isMissingTableError(error)) return [];
+  throwIfError(error, 'despacho_sap_lotes');
+  return (data || []).map((d) => ({
+    id: String(d.id),
+    material: String(d.material),
+    fechaAceptacion: String(d.fecha_aceptacion),
+    numeroTraslado: String(d.numero_traslado || ''),
+    notaEntrega: String(d.nota_entrega || ''),
+    estado: String(d.estado),
+    fechaEntrega: d.fecha_entrega ? String(d.fecha_entrega) : null,
+    conduce: String(d.conduce || ''),
+    transportista: String(d.transportista || ''),
+    recibidoPor: String(d.recibido_por || ''),
+    observacionesDespacho: String(d.observaciones_despacho || ''),
+    usuarioRegistro: String(d.usuario_registro || ''),
+    createdAt: String(d.created_at),
+  }));
+};
+
+export const appendSapHistory = async (
+  entries: Array<{
+    equipoId?: string | null;
+    loteId?: string | null;
+    imei: string;
+    accion: string;
+    estadoAnterior?: string | null;
+    estadoNuevo?: string | null;
+    usuario: string;
+    ip: string;
+    metadata?: Record<string, unknown>;
+  }>,
+) => {
+  if (!entries.length) return;
+  const supabase = getSupabaseAdmin();
+  const rows = entries.map((e) => ({
+    equipo_id: e.equipoId ?? null,
+    lote_id: e.loteId ?? null,
+    imei: e.imei,
+    accion: e.accion,
+    estado_anterior: e.estadoAnterior ?? null,
+    estado_nuevo: e.estadoNuevo ?? null,
+    usuario: e.usuario,
+    ip: e.ip,
+    metadata: e.metadata ?? {},
+  }));
+  const { error } = await supabase.from('despacho_sap_history').insert(rows);
+  if (error && isMissingTableError(error)) return;
+  throwIfError(error, 'despacho_sap_history');
+};
+
+export const getSapHistoryByImei = async (imei: string) => {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('despacho_sap_history')
+    .select('*')
+    .eq('imei', imei.trim())
+    .order('created_at', { ascending: false });
+  if (error && isMissingTableError(error)) return [];
+  throwIfError(error, 'despacho_sap_history');
+  return (data || []).map((r) => ({
+    id: String(r.id),
+    equipoId: r.equipo_id ? String(r.equipo_id) : null,
+    loteId: r.lote_id ? String(r.lote_id) : null,
+    imei: String(r.imei),
+    accion: String(r.accion),
+    estadoAnterior: r.estado_anterior ? String(r.estado_anterior) : null,
+    estadoNuevo: r.estado_nuevo ? String(r.estado_nuevo) : null,
+    usuario: String(r.usuario || ''),
+    ip: String(r.ip || ''),
+    createdAt: String(r.created_at),
+  }));
+};
+
+export const getSapHistoryByLote = async (loteId: string) => {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('despacho_sap_history')
+    .select('*')
+    .eq('lote_id', loteId)
+    .order('created_at', { ascending: false });
+  if (error && isMissingTableError(error)) return [];
+  throwIfError(error, 'despacho_sap_history');
+  return (data || []).map((r) => ({
+    id: String(r.id),
+    equipoId: r.equipo_id ? String(r.equipo_id) : null,
+    loteId: r.lote_id ? String(r.lote_id) : null,
+    imei: String(r.imei),
+    accion: String(r.accion),
+    estadoAnterior: r.estado_anterior ? String(r.estado_anterior) : null,
+    estadoNuevo: r.estado_nuevo ? String(r.estado_nuevo) : null,
+    usuario: String(r.usuario || ''),
+    ip: String(r.ip || ''),
+    createdAt: String(r.created_at),
+  }));
+};
+
+export const logSapAudit = async (entry: {
+  usuario: string;
+  ip: string;
+  accion: string;
+  imei?: string;
+  antes?: unknown;
+  despues?: unknown;
+}) => {
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase.from('despacho_sap_audit').insert({
+    usuario: entry.usuario,
+    ip: entry.ip,
+    accion: entry.accion,
+    imei: entry.imei ?? '',
+    antes: entry.antes ?? null,
+    despues: entry.despues ?? null,
+  });
+  if (error && isMissingTableError(error)) return;
+  throwIfError(error, 'despacho_sap_audit');
+};
+

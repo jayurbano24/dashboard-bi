@@ -13,7 +13,7 @@ type OrdersApiPayload = {
 
 const ORDERS_CACHE_TTL_MS = Number(process.env.ORDERRY_ORDERS_CACHE_TTL_MS || '90000');
 const ORDERS_MAX_PAGES = Number(process.env.ORDERRY_ORDERS_MAX_PAGES || '8');
-const ORDERS_PAGE_TIMEOUT_MS = Number(process.env.ORDERRY_ORDERS_PAGE_TIMEOUT_MS || '9000');
+const ORDERS_PAGE_TIMEOUT_MS = Number(process.env.ORDERRY_ORDERS_PAGE_TIMEOUT_MS || '25000');
 
 let ordersCache: { expiresAt: number; payload: OrdersApiPayload } | null = null;
 let inFlight: Promise<OrdersApiPayload> | null = null;

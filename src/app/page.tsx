@@ -1289,11 +1289,15 @@ const PENDIENTE_SLA_STATUSES = [
   'ESPERANDO APROBACION',
   'SWAPS PCBA',
   'SWAPS-PCBA',
+  'REMPLAZO DE TARJETA/ C.U.',
   'ESCALADA PARA NC',
+  'ESCALADA PARA NOTA DE CREDITO',
   'PRESUPUESTO RECHAZADO',
   'ESPERANDO PARTES',
+  'SOLICITUD DE REPUESTOS',
   'ESCALADO LIFE ONE',
   'ESCALADO LIFE-ONE',
+  'ESCALADO AL FABRICANTE',
 ];
 
 const isPendienteOrder = (order: Record<string, any>) => {
@@ -1534,6 +1538,8 @@ const QA_PREVIOUS_STAGE_MARKERS = [
   'PENDIENTE DE RECOLECCION',
   'EN TRANSITO A CSA',
   'VALIDACION SAF',
+  'VALIDACION SAP',
+  'PRE-DIAGNOSTICO',
   'MANTENIMIENTO',
   'TEST',
   'EN DIAGNOSTICO',
@@ -1543,11 +1549,16 @@ const QA_PREVIOUS_STAGE_MARKERS = [
   'VALIDACION DAP',
   'ESPERANDO APROBACION',
   'SWAPS PCBA',
+  'REMPLAZO DE TARJETA/ C.U.',
   'ESCALADA PARA NC',
+  'ESCALADA PARA NOTA DE CREDITO',
   'PRESUPUESTO RECHAZADO',
   'ESPERANDO PARTES',
+  'SOLICITUD DE REPUESTOS',
   'ESCALADO LIFE ONE',
   'ESCALADO LIFEONE',
+  'ESCALADO LIFE-ONE',
+  'ESCALADO AL FABRICANTE',
 ];
 
 const statusMatchesAnyMarker = (status: string, markers: string[]) => {
@@ -1809,8 +1820,7 @@ const getRepairComplexityLabel = (order: Record<string, any>) => {
   if (
     statusName.includes('PRESUPUESTO RECHAZADO') ||
     statusName.includes('NOTA DE CREDITO') ||
-    statusName.includes('DEVOLUC') ||
-    statusName.includes('PARA DEVOLVER') ||
+    statusName.includes('DEVOL') ||
     notRepairedSignals
   ) {
     return 'No Reparado';
@@ -1844,8 +1854,7 @@ const isDispatchStatus = (order: Record<string, any>) => {
     statusName.includes('ENTREGA') ||
     statusName.includes('ENTREGAD') ||
     statusName.includes('DESPACH') ||
-    statusName.includes('DEVOLVER') ||
-    statusName.includes('DEVOLUC') ||
+    statusName.includes('DEVOL') ||
     statusName.includes('RETIR')
   );
 };
@@ -1858,7 +1867,7 @@ const getOperationalFunnelStage = (order: Record<string, any>) => {
   const status = normalizeText(order?.status?.name);
 
   if (
-    status.includes('PARA DEVOLVER') &&
+    status.includes('DEVOL') &&
     !status.includes('NOTA DE CREDITO')
   ) return 'Para Devolver';
 
@@ -4826,9 +4835,12 @@ export default function DashboardMultimodular() {
         const status = normalizeText(order?.status?.name || '');
 
         const isCerrada = [
-          'PARA DEVOLVER CAMBIO AGENCIA', 'ENTREGADO/LIFE-ONE', 'ENTREGADO-NOTA DE CREDITO', 
-          'NOTA DE CREDITO VALIDACION SAP', 'ARCHIVADO', 'PARA DEVOLVER CAC', 
-          'PARA DEVOLVER/LIFE-ONE', 'BODEGA CLARO G945/G935'
+          'PARA DEVOLUCION', 'PARA DEVOLVER', 'PARA DEVOLUCIÓN AL CAC', 'PARA DEVOLVER CAC',
+          'PARA DEVOLUCION NOTA DE CREDITO', 'PARA DEVOLVER -NOTA DE CREDITO',
+          'PARA DEVOLUCION LIFE-ONE', 'PARA DEVOLVER/LIFE-ONE',
+          'DEVOLUCION CAMBIO EN AGENCIAS', 'DEVOLUCION CAMBIO EN AGENCIA', 'PARA DEVOLVER CAMBIO AGENCIA',
+          'PARA DEVOLVER BODEGA/SAP', 'NOTA DE CREDITO VALIDACION SAP',
+          'ENTREGADO/LIFE-ONE', 'ENTREGADO-NOTA DE CREDITO', 'ARCHIVADO', 'BODEGA CLARO G945/G935'
         ].some(marker => status.includes(normalizeText(marker))) || isDispatchStatus(order);
 
         const isPendiente = isPendienteOrder(order);

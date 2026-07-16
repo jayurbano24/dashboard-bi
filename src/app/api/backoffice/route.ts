@@ -39,7 +39,7 @@ const isClosedWonStatus = (order: GenericOrder) => {
     combined.includes('ARCHIVAD') ||
     combined.includes('CERRAD') ||
     combined.includes('ENTREGA') ||
-    combined.includes('DEVOLVER') ||
+    combined.includes('DEVOL') ||
     combined.includes('NOTA DE CREDITO')
   );
 };
@@ -286,7 +286,7 @@ const fetchAllOrderryOrders = async (): Promise<GenericOrder[]> => {
   const baseUrl = process.env.ORDERRY_API_URL || 'https://api.orderry.com';
   const maxPages = Number(process.env.BACKOFFICE_ORDERRY_MAX_PAGES || '4');
   const maxTotalMs = Number(process.env.BACKOFFICE_ORDERRY_MAX_TOTAL_MS || '25000');
-  const perPageTimeoutMs = Number(process.env.BACKOFFICE_ORDERRY_PAGE_TIMEOUT_MS || '7000');
+  const perPageTimeoutMs = Number(process.env.BACKOFFICE_ORDERRY_PAGE_TIMEOUT_MS || '25000');
 
   if (!apiKey) return [];
 

@@ -23,7 +23,17 @@ function normalizeStatusLoose(value: string): string {
 
 function isNotaCreditoSourceStatus(name: string): boolean {
   const n = normalizeStatusName(name);
-  return n.includes('PARA DEVOLVER') && n.includes('NOTA') && n.includes('CREDITO');
+  return n.includes('DEVOL') && n.includes('NOTA') && n.includes('CREDITO');
+}
+
+function isLifeOneSourceStatus(name: string): boolean {
+  const n = normalizeStatusName(name);
+  return n.includes('LIFE') || n.includes('ONE');
+}
+
+function isClaroBodegaSourceStatus(name: string): boolean {
+  const n = normalizeStatusName(name);
+  return n.includes('BODEGA') || n.includes('CLARO') || n.includes('SAP');
 }
 
 async function fetchOrderById(baseUrl: string, headers: Record<string, string>, id: number): Promise<AnyRecord | null> {
@@ -140,6 +150,8 @@ function pickTargetStatus(
 ): { id: number; name: string; source: string } {
   const loose = (s: string) => normalizeStatusLoose(s);
   const wantsNc = isNotaCreditoSourceStatus(currentStatusName);
+  const wantsLifeOne = isLifeOneSourceStatus(currentStatusName);
+  const wantsBodegaClaro = isClaroBodegaSourceStatus(currentStatusName);
 
   const findExactLoose = (value: string) => catalog.find((s) => loose(s.name) === loose(value));
 
@@ -161,6 +173,45 @@ function pickTargetStatus(
       return n.includes('ENTREGADO') && n.includes('NOTA') && n.includes('CREDITO');
     });
     if (containsNc) return containsNc;
+  }
+
+  if (wantsLifeOne) {
+    const loCandidates = [
+      'ENTREGADO/LIFE-ONE',
+      'ENTREGADO-LIFE-ONE',
+      'ENTREGADO LIFE ONE',
+      'ENTREGADO/LIFEONE',
+    ];
+
+    for (const lo of loCandidates) {
+      const match = findExactLoose(lo);
+      if (match) return match;
+    }
+
+    const containsLo = catalog.find((s) => {
+      const n = normalizeStatusName(s.name);
+      return n.includes('ENTREGADO') && (n.includes('LIFE') || n.includes('ONE'));
+    });
+    if (containsLo) return containsLo;
+  }
+
+  if (wantsBodegaClaro) {
+    const bcCandidates = [
+      'BODEGA CLARO G945/G935',
+      'BODEGA CLARO',
+      'BODEGA CLARO G945 G935',
+    ];
+
+    for (const bc of bcCandidates) {
+      const match = findExactLoose(bc);
+      if (match) return match;
+    }
+
+    const containsBc = catalog.find((s) => {
+      const n = normalizeStatusName(s.name);
+      return n.includes('BODEGA') || n.includes('CLARO');
+    });
+    if (containsBc) return containsBc;
   }
 
   const exact = catalog.find((s) => normalizeStatusName(s.name) === 'ENTREGADO');

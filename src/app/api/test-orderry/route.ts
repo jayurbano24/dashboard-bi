@@ -7,12 +7,20 @@ export async function GET(request: Request) {
   const baseUrl = process.env.ORDERRY_API_URL || 'https://api.orderry.com';
 
   const { searchParams } = new URL(request.url);
-  const include = searchParams.get('include') || 'operations,materials,parts,products,items';
-  
-  const res = await fetch(`${baseUrl}/v2/orders?limit=1&include=${include}`, {
-    headers: { Authorization: `Bearer ${apiKey}` }
-  });
-  
-  const data = await res.json();
-  return NextResponse.json(data);
+  const orderId = searchParams.get('orderId') || '21743432'; // TCGT-542603 por defecto
+
+  // Intentar obtener historial de cambios de estado
+  const [orderRes, historyRes] = await Promise.all([
+    fetch(`${baseUrl}/v2/orders/${orderId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` }
+    }),
+    fetch(`${baseUrl}/v2/orders/${orderId}/history`, {
+      headers: { Authorization: `Bearer ${apiKey}` }
+    }),
+  ]);
+
+  const order = orderRes.ok ? await orderRes.json() : { error: `HTTP ${orderRes.status}` };
+  const history = historyRes.ok ? await historyRes.json() : { error: `HTTP ${historyRes.status}` };
+
+  return NextResponse.json({ order_fields: Object.keys(order), history });
 }

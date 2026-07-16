@@ -20,6 +20,7 @@ import {
   Filter,
   ArrowLeft,
 } from 'lucide-react';
+import { SapModule } from './sap/SapModule';
 
 // ─── CATÁLOGOS ────────────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ const SUCURSALES_DATA = {
   origen:  { direccion: 'N/A', contacto: 'N/A', cantPaquetesDisp: 'N/A', cantMaxPaquetes: 'N/A' },
 };
 
-const COURRIERS_LIST = ['--CURRIER--', 'DHL Express', 'FedEx Logística', 'Cargo Expreso', 'Servicios de Entrega Local'];
+const COURRIERS_LIST = ['--CURRIER--', 'DHL Express', 'FedEx Logística', 'Cargo Expreso', 'Mensajería TC'];
 const ORIGENES_LIST = ['--ORIGEN--', 'Bodega Central Norte', 'Bodega de Retorno', 'Recepción Técnica Zona 9'];
 const OPERADORES_LIST = [
   '--OPERADOR--',
@@ -66,6 +67,17 @@ interface UnidadDespachada {
   agencia: string;
   ordenNumero?: string;
   orderId?: number | null;
+  cliente?: string;
+  telefono?: string;
+  fechaEnvioTienda?: string;
+  motivoNoAplica?: string;
+  tecnico?: string;
+  justificacionTiempo?: string;
+  garantia?: string;
+  tipoOrden?: string;
+  serviciosObras?: string;
+  created_at?: string | null;
+  closed_at?: string | null;
 }
 
 interface PlanDevolucion {
@@ -176,12 +188,10 @@ function formatHistoryDateTime(value: string): { date: string; time: string } {
 function isEstadoBloqueado(estado: string): boolean {
   const s = estado.toUpperCase();
   const PERMITIDOS = [
-    'PARA DEVOLVER',          // cubre: PARA DEVOLVER, PARA DEVOLVER CAC,
-                               // PARA DEVOLVER - NOTA DE CREDITO,
-                               // PARA DEVOLVER/LIFE-ONE, PARA DEVOLVER CAMBIO AGENCIA
-    'NOTA DE CREDITO VALIDACION SAP',
-    'ESCALADA PARA NC',       // Escaladas a Nota de Crédito
-    'ESCALADA',               // Cualquier variante ESCALADA
+    'DEVOL',
+    'ESCALADA',
+    'NOTA DE CREDITO',
+    'NOTA DE CRÉDITO',
   ];
   return !PERMITIDOS.some((p) => s.includes(p));
 }
@@ -189,7 +199,7 @@ function isEstadoBloqueado(estado: string): boolean {
 /** Color del badge de estado basado en el nombre real de Orderry */
 function estadoBadgeClass(estado: string): string {
   const s = estado.toUpperCase();
-  if (s.includes('DEVOLVER')) return 'bg-amber-100 text-amber-800 border border-amber-400';
+  if (s.includes('DEVOL') || s.includes('RETIR')) return 'bg-amber-100 text-amber-800 border border-amber-400';
   if (s.includes('NOTA') || s.includes('CREDITO')) return 'bg-red-100 text-red-800';
   if (s.includes('REPARAD') || s.includes('TERMINAD')) return 'bg-emerald-100 text-emerald-800';
   if (s.includes('ENTREGADO')) return 'bg-blue-100 text-blue-800';
@@ -209,12 +219,18 @@ export default function DespachoPagina() {
   const handleSyncAgencies = async () => {
     setSyncingAgencies(true);
     try {
-      const res = await fetch('/api/despacho/sync-agencies', { method: 'POST' });
+      showNotification('Iniciando sincronización profunda (Backfill)...', 'info');
+      const res = await fetch('/api/despacho/backfill', { method: 'GET' });
       const data = await res.json();
-      if (data.ok) showNotification(`✅ ${data.synced} agencias sincronizadas en Supabase.`);
-      else showNotification(`⚠️ ${data.error || 'Error al sincronizar.'}`, 'error');
-    } catch {
-      showNotification('⚠️ No se pudo conectar con el servidor.', 'error');
+      if (data.ok) showNotification(`✅ Backfill completo. ${data.updated} registros actualizados en Supabase.`);
+      else showNotification(`⚠️ Backfill finalizado con errores o advertencias.`, 'error');
+      
+      // Reload report data to reflect the changes immediately
+      if (activeTab === 'reporte') {
+        loadReport();
+      }
+    } catch (err) {
+      showNotification('⚠️ Error al conectar con el API de Backfill.', 'error');
     } finally {
       setSyncingAgencies(false);
     }
@@ -222,9 +238,24 @@ export default function DespachoPagina() {
 
   // Conduces
   const [conduces, setConduces] = useState<Conduce[]>([]);
-  const [activeTab, setActiveTab] = useState<'despacho' | 'historial'>('despacho');
+  const [activeTab, setActiveTab] = useState<'despacho' | 'historial' | 'reporte' | 'sap'>('despacho');
   const [selectedConduce, setSelectedConduce] = useState<Conduce | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // --- Report Engine States ---
+  const [reportStartDate, setReportStartDate] = useState('');
+  const [reportEndDate, setReportEndDate] = useState('');
+  const [reportSearchTerm, setReportSearchTerm] = useState('');
+  const [reportDealer, setReportDealer] = useState('ALL');
+  const [reportCourrier, setReportCourrier] = useState('ALL');
+  const [reportMarca, setReportMarca] = useState('ALL');
+  const [reportDoa, setReportDoa] = useState('ALL');
+  const [reportTemplate, setReportTemplate] = useState('TCW_MASTER');
+  const [reportRegion, setReportRegion] = useState<'TODOS' | 'GAM' | 'NO GAM'>('TODOS');
+  const [reportRows, setReportRows] = useState<any[]>([]);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportCurrentPage, setReportCurrentPage] = useState(1);
+  const reportRowsPerPage = 25;
 
   // Formulario conduce
   const [conduceNum, setConduceNum] = useState('TCSAL-0043');
@@ -315,6 +346,70 @@ export default function DespachoPagina() {
       setHistoryLoading(false);
     }
   };
+
+  const loadReport = async () => {
+    setReportLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (reportStartDate) params.append('startDate', reportStartDate);
+      if (reportEndDate) params.append('endDate', reportEndDate);
+      if (reportSearchTerm) params.append('searchTerm', reportSearchTerm);
+      if (reportDealer !== 'ALL') params.append('dealer', reportDealer);
+      if (reportCourrier !== 'ALL') params.append('courrier', reportCourrier);
+      if (reportMarca !== 'ALL') params.append('marca', reportMarca);
+      if (reportDoa !== 'ALL') params.append('doa', reportDoa);
+      if (reportTemplate) params.append('template', reportTemplate);
+      if (reportRegion) params.append('region', reportRegion);
+
+      const res = await fetch(`/api/despacho/report?${params.toString()}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.rows)) {
+        setReportRows(data.rows);
+        setReportCurrentPage(1);
+      } else {
+        showNotification(data.error || 'Error al cargar reporte.', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Error de red al cargar reporte.', 'error');
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const exportReportToCsv = () => {
+    if (!reportRows.length) {
+      showNotification('No hay datos para exportar.', 'error');
+      return;
+    }
+
+    const params = new URLSearchParams();
+    if (reportStartDate) params.append('startDate', reportStartDate);
+    if (reportEndDate) params.append('endDate', reportEndDate);
+    if (reportSearchTerm) params.append('searchTerm', reportSearchTerm);
+    if (reportDealer !== 'ALL') params.append('dealer', reportDealer);
+    if (reportCourrier !== 'ALL') params.append('courrier', reportCourrier);
+    if (reportMarca !== 'ALL') params.append('marca', reportMarca);
+    if (reportDoa !== 'ALL') params.append('doa', reportDoa);
+    if (reportTemplate) params.append('template', reportTemplate);
+    if (reportRegion) params.append('region', reportRegion);
+    
+    if (reportTemplate === 'PLANTILLA_CLARO_MENSUAL') {
+      params.append('format', 'xlsx');
+    } else {
+      params.append('format', 'csv');
+    }
+
+    // Abre el endpoint de descarga directamente para que el navegador maneje la descarga del archivo CSV/XLSX con el nombre correcto
+    window.open(`/api/despacho/report?${params.toString()}`, '_blank');
+  };
+
+  useEffect(() => {
+    if (activeTab === 'reporte') {
+      loadReport();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
 
   // Persistencia (solo después del primer mount para no borrar con el estado inicial vacío)
   useEffect(() => {
@@ -506,6 +601,16 @@ export default function DespachoPagina() {
         ordenNumero: o.ordenNumero, orderId: o.orderId,
         color: o.color, tipoIngreso: o.tipoIngreso, canalIngreso: o.canalIngreso,
         reparada: null,
+        cliente: o.cliente ?? '',
+        telefono: o.telefono ?? '',
+        falla: o.falla ?? '',
+        serviciosObras: o.serviciosObras ?? '',
+        tecnico: o.tecnico ?? '',
+        fechaEnvioTienda: o.fechaEnvioTienda ?? '',
+        motivoNoAplica: o.motivoNoAplica ?? '',
+        justificacionTiempo: o.justificacionTiempo ?? '',
+        garantia: o.garantia ?? 'SI',
+        tipoOrden: o.tipoOrden ?? '',
       });
     }
     if (nuevas.length > 0) {
@@ -597,6 +702,18 @@ export default function DespachoPagina() {
         let realCanalIngreso = '';
         let realReparada: boolean | null = null;
         let realGrupo = '';
+        let realCliente = '';
+        let realTelefono = '';
+        let realFechaEnvioTienda = '';
+        let realMotivoNoAplica = '';
+        let realTecnico = '';
+        let realJustificacionTiempo = '';
+        let realFalla = '';
+        let realGarantia = 'SI';
+        let realTipoOrden = '';
+        let realServiciosObras = '';
+        let realCreatedAt: string | null = null;
+        let realClosedAt: string | null = null;
         try {
           const result = await lookupImei(cleanImei);
           if (result.found) {
@@ -610,6 +727,18 @@ export default function DespachoPagina() {
             realCanalIngreso = result.canalIngreso ?? '';
             realReparada = result.reparada ?? null;
             realGrupo = result.grupo ?? '';
+            realCliente = result.cliente ?? '';
+            realTelefono = result.telefono ?? '';
+            realFechaEnvioTienda = result.fechaEnvioTienda ?? '';
+            realMotivoNoAplica = result.motivoNoAplica ?? '';
+            realTecnico = result.tecnico ?? '';
+            realJustificacionTiempo = result.justificacionTiempo ?? '';
+            realFalla = result.falla ?? '';
+            realGarantia = result.garantia ?? 'SI';
+            realTipoOrden = result.tipoOrden ?? '';
+            realServiciosObras = result.serviciosObras ?? '';
+            realCreatedAt = result.created_at ?? null;
+            realClosedAt = result.closed_at ?? null;
           }
         } catch { /* mantiene defaults del plan */ }
         setScanLoading(false);
@@ -633,7 +762,17 @@ export default function DespachoPagina() {
           imei: cleanImei, producto: `${realMarca} ${realModelo} (${plan.tipo})`,
           marca: realMarca, modelo: realModelo, estado: realEstado, agencia: plan.agencia,
           ordenNumero: realOrdenNum, orderId: realOrderId,
-          color: realColor, tipoIngreso: realTipoIngreso, canalIngreso: realCanalIngreso, reparada: realReparada, grupo: realGrupo,
+          color: realColor, tipoIngreso: realTipoIngreso, canalIngreso: realCanalIngreso, 
+          reparada: realReparada, grupo: realGrupo,
+          cliente: realCliente, telefono: realTelefono,
+          fechaEnvioTienda: realFechaEnvioTienda, motivoNoAplica: realMotivoNoAplica,
+          tecnico: realTecnico, justificacionTiempo: realJustificacionTiempo,
+          falla: realFalla,
+          garantia: realGarantia,
+          tipoOrden: realTipoOrden,
+          serviciosObras: realServiciosObras,
+          created_at: realCreatedAt,
+          closed_at: realClosedAt,
         }]);
         setScanMessage({ text: `✅ ${realMarca} ${realModelo} → lote [${plan.marca} ${plan.modelo}] — Estado: [${realEstado}]${realOrdenNum ? ` — Orden: ${realOrdenNum}` : ''}`, type: 'success' });
         if (copiaPlanes[planIndex].escaneados >= plan.cantidad) {
@@ -702,6 +841,18 @@ export default function DespachoPagina() {
             canalIngreso: result.canalIngreso ?? 'N/A',
             reparada: result.reparada ?? null,
             grupo: result.grupo ?? '',
+            cliente: result.cliente ?? '',
+            telefono: result.telefono ?? '',
+            fechaEnvioTienda: result.fechaEnvioTienda ?? '',
+            motivoNoAplica: result.motivoNoAplica ?? '',
+            tecnico: result.tecnico ?? '',
+            justificacionTiempo: result.justificacionTiempo ?? '',
+            falla: result.falla ?? '',
+            garantia: result.garantia ?? 'SI',
+            tipoOrden: result.tipoOrden ?? '',
+            serviciosObras: result.serviciosObras ?? '',
+            created_at: result.created_at ?? null,
+            closed_at: result.closed_at ?? null,
           }]);
           setScanMessage({ text: `✅ ${result.marca} ${result.modelo} — Estado: [${displayEstado}] — Orden: ${result.ordenNumero ?? 'N/A'}`, type: 'success' });
         }
@@ -905,11 +1056,14 @@ export default function DespachoPagina() {
 
       {/* TABS */}
       <div className="bg-white border-b border-slate-200 shadow-sm flex overflow-x-auto">
-        {(['despacho', 'historial'] as const).map((tab) => (
+        {(['despacho', 'historial', 'reporte', 'sap'] as const).map((tab) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             className={`flex items-center px-6 py-4 border-b-2 font-semibold text-sm transition-colors whitespace-nowrap ${activeTab === tab ? 'border-[#001e6c] text-[#001e6c] bg-slate-50' : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'}`}
           >
-            {tab === 'despacho' ? <><Barcode className="w-4 h-4 mr-2" />Ventana de Despacho &amp; Pistoleo</> : <><FileText className="w-4 h-4 mr-2" />Historial &amp; Correlativos TCSAL<span className="ml-2 bg-slate-200 text-slate-800 text-xs px-2 py-0.5 rounded-full font-bold">{historyTotal}</span></>}
+            {tab === 'despacho' && <><Barcode className="w-4 h-4 mr-2" />Ventana de Despacho &amp; Pistoleo</>}
+            {tab === 'historial' && <><FileText className="w-4 h-4 mr-2" />Historial &amp; Correlativos TCSAL<span className="ml-2 bg-slate-200 text-slate-800 text-xs px-2 py-0.5 rounded-full font-bold">{historyTotal}</span></>}
+            {tab === 'reporte' && <><Printer className="w-4 h-4 mr-2 text-blue-600" />Motor de Reporte</>}
+            {tab === 'sap' && <><Smartphone className="w-4 h-4 mr-2 text-emerald-600" />Ingreso Equipos SAP</>}
           </button>
         ))}
       </div>
@@ -1256,6 +1410,201 @@ export default function DespachoPagina() {
             {historyLoading && <div className="px-6 py-3 text-xs text-slate-500 border-t border-slate-200">Sincronizando historial desde Supabase…</div>}
           </div>
         )}
+
+        {/* ══════════════ TAB REPORTE (MOTOR DE REPORTE) ══════════════ */}
+        {activeTab === 'reporte' && (
+          <div className="bg-white rounded-xl border border-slate-300 shadow-lg overflow-hidden space-y-6 p-6">
+            <div className="border-b border-slate-200 pb-4">
+              <h2 className="text-lg font-bold text-[#001e6c] flex items-center"><Printer className="w-5 h-5 mr-2 text-amber-500 animate-pulse" />Motor de Reporte de Despachos</h2>
+              <p className="text-xs text-slate-500">Consulte y extraiga reportes de todas las unidades despachadas en Supabase.</p>
+            </div>
+
+            {/* FILTROS FILA 1 */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 uppercase mb-1">Fecha Inicio</label>
+                <input type="date" value={reportStartDate} onChange={(e) => setReportStartDate(e.target.value)} className="w-full p-2 border border-slate-300 rounded focus:outline-none" />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 uppercase mb-1">Fecha Fin</label>
+                <input type="date" value={reportEndDate} onChange={(e) => setReportEndDate(e.target.value)} className="w-full p-2 border border-slate-300 rounded focus:outline-none" />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 uppercase mb-1">Marca</label>
+                <select value={reportMarca} onChange={(e) => setReportMarca(e.target.value)} className="w-full p-2 bg-white border border-slate-300 rounded focus:outline-none">
+                  <option value="ALL">-- TODAS --</option>
+                  {Array.from(new Set(reportRows.map(r => r.marca || r.Marca).filter(Boolean))).map(m => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 uppercase mb-1">DOA</label>
+                <select value={reportDoa} onChange={(e) => setReportDoa(e.target.value)} className="w-full p-2 bg-white border border-slate-300 rounded focus:outline-none">
+                  <option value="ALL">-- TODOS --</option>
+                  <option value="true">SÓLO DOA</option>
+                  <option value="false">SÓLO ESTÁNDAR</option>
+                </select>
+              </div>
+            </div>
+
+            {/* FILTROS FILA 2 */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs pt-2">
+              <div>
+                <label className="block font-bold text-slate-700 uppercase mb-1">Plantilla de Reporte</label>
+                <select value={reportTemplate} onChange={(e) => setReportTemplate(e.target.value)} className="w-full p-2 bg-white border border-slate-300 rounded focus:outline-none">
+                  <option value="TCW_MASTER">TCW Master (Interno)</option>
+                  <option value="PLANTILLA_CLARO_MENSUAL">Claro Mensual (Plantilla)</option>
+                  <option value="CLAIMS_DTI">Claims DTI (Plantilla)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 uppercase mb-1">Región (Enrutamiento)</label>
+                <select value={reportRegion} onChange={(e) => setReportRegion(e.target.value as any)} className="w-full p-2 bg-white border border-slate-300 rounded focus:outline-none">
+                  <option value="TODOS">-- TODOS (Nacional) --</option>
+                  <option value="GAM">GAM (Guatemala)</option>
+                  <option value="NO GAM">NO GAM (Departamentos)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 uppercase mb-1">Buscar (IMEI, Conduce, etc.)</label>
+                <input type="text" placeholder="Escriba término de búsqueda..." value={reportSearchTerm} onChange={(e) => setReportSearchTerm(e.target.value)} className="w-full p-2 border border-slate-300 rounded focus:outline-none" />
+              </div>
+              <div className="flex items-end gap-2">
+                <button onClick={loadReport} disabled={reportLoading} className="flex-1 py-2 bg-[#001e6c] hover:bg-[#00155a] text-white font-bold rounded transition">
+                  {reportLoading ? 'Cargando...' : 'Buscar'}
+                </button>
+                <button onClick={exportReportToCsv} className={`flex-1 py-2 font-bold rounded transition flex items-center justify-center gap-1 ${reportTemplate === 'PLANTILLA_CLARO_MENSUAL' ? 'bg-[#107c41] hover:bg-[#185c37] text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}>
+                  <FileText className="w-4 h-4" /> {reportTemplate === 'PLANTILLA_CLARO_MENSUAL' ? 'Exportar Excel' : 'Exportar CSV'}
+                </button>
+              </div>
+            </div>
+
+            {/* TABLA DE RESULTADOS */}
+            {reportLoading ? (
+              <div className="p-12 text-center text-slate-500 animate-pulse">Generando reporte de la base de datos...</div>
+            ) : reportRows.length === 0 ? (
+              <div className="p-12 text-center text-slate-400 border border-dashed rounded bg-slate-50">No se encontraron registros de despachos con los filtros seleccionados.</div>
+            ) : (
+              <div className="overflow-x-auto border border-slate-200 rounded-lg shadow-inner">
+                {reportTemplate === 'PLANTILLA_CLARO_MENSUAL' ? (
+                  <table className="w-full text-left border-collapse text-[11px] whitespace-nowrap">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-600 font-bold border-b">
+                        {reportRows.length > 0 && Object.keys(reportRows[0]).map((col) => (
+                          <th key={col} className="p-3 border">{col}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {reportRows.slice((reportCurrentPage - 1) * reportRowsPerPage, reportCurrentPage * reportRowsPerPage).map((r, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50">
+                          {Object.keys(r).map((col, vIdx) => {
+                            const val = (r as any)[col];
+                            
+                            // Highlight SLA values specially
+                            if (col === 'Estado SLA') {
+                              return (
+                                <td key={vIdx} className="p-3 border font-bold">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] ${val === 'Dentro SLA' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>{val}</span>
+                                </td>
+                              );
+                            }
+
+                            return (
+                              <td key={vIdx} className="p-3 border">
+                                {val === null || val === undefined || val === '' ? '—' : String(val)}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <table className="w-full text-left border-collapse text-[11px] whitespace-nowrap">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-600 font-bold border-b">
+                        <th className="p-3 border">No. Conduce</th>
+                        <th className="p-3 border">Fecha</th>
+                        <th className="p-3 border">Despachado Por</th>
+                        <th className="p-3 border">Agencia / Cliente</th>
+                        <th className="p-3 border">Courier / Guía</th>
+                        <th className="p-3 border">IMEI / Serie</th>
+                        <th className="p-3 border">Orden</th>
+                        <th className="p-3 border">Marca / Modelo</th>
+                        <th className="p-3 border">Estado</th>
+                        <th className="p-3 border text-center">DOA</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {reportRows.slice((reportCurrentPage - 1) * reportRowsPerPage, reportCurrentPage * reportRowsPerPage).map((r, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50">
+                          <td className="p-3 border font-bold font-mono text-[#001e6c]">{r.conduceId || r['No. Conduce']}</td>
+                          <td className="p-3 border text-slate-500 font-mono text-[10px]">{
+                            r.fecha ? (formatHistoryDateTime(r.fecha).date + ' ' + formatHistoryDateTime(r.fecha).time) : (r['Fecha/Hora'] || '—')
+                          }</td>
+                          <td className="p-3 border font-semibold text-slate-700">{r.despachadoPor || r['Despachado Por'] || '—'}</td>
+                          <td className="p-3 border">
+                            <span className="font-bold text-slate-900">{r.dealer || r.retail || r.operador || r.Dealer || r.Retail || r.Operador || '—'}</span>
+                            {(r.sucursal || r.Sucursal) && <span className="text-[10px] text-slate-500 block">Sucursal: {r.sucursal || r.Sucursal}</span>}
+                          </td>
+                          <td className="p-3 border">
+                            {r.courrier || r.Courier || '—'} / <span className="font-mono text-[10px] font-semibold text-slate-600">{r.numeroGuia || r['Guía Courier'] || '—'}</span>
+                          </td>
+                          <td className="p-3 border font-mono font-bold text-slate-800">
+                            {r.imei || r.IMEI} {(r.serie || r.Serie) && <span className="text-slate-500 font-normal text-[9px] block">SN: {r.serie || r.Serie}</span>}
+                          </td>
+                          <td className="p-3 border font-mono text-slate-600">{r.orderName || r['Nombre Orden'] || '—'}</td>
+                          <td className="p-3 border"><span className="bg-slate-100 text-slate-800 text-[10px] px-1.5 py-0.5 rounded font-bold mr-1">{r.marca || r.Marca}</span> {r.modelo || r.Modelo}</td>
+                          <td className="p-3 border"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${estadoBadgeClass(r.estado || r.Estado)}`}>{r.estado || r.Estado}</span></td>
+                          <td className="p-3 border text-center font-bold">
+                            {(r.doa !== undefined ? r.doa : (r.DOA === 'SÍ')) ? (
+                              <span className="text-red-600 bg-red-50 border border-red-200 px-2 py-0.5 rounded">SÍ</span>
+                            ) : (
+                              <span className="text-slate-400">NO</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {Math.ceil(reportRows.length / reportRowsPerPage) > 1 && (
+                  <div className="flex items-center justify-between p-4 border-t bg-slate-50">
+                    <span className="text-xs text-slate-500 font-semibold">
+                      Mostrando {(reportCurrentPage - 1) * reportRowsPerPage + 1} a {Math.min(reportCurrentPage * reportRowsPerPage, reportRows.length)} de {reportRows.length} registros
+                    </span>
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => setReportCurrentPage(p => Math.max(1, p - 1))}
+                        disabled={reportCurrentPage === 1}
+                        className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold disabled:opacity-50 hover:bg-slate-100"
+                      >
+                        Anterior
+                      </button>
+                      <span className="px-3 py-1 text-xs font-bold text-slate-700">
+                        {reportCurrentPage} / {Math.ceil(reportRows.length / reportRowsPerPage)}
+                      </span>
+                      <button
+                        onClick={() => setReportCurrentPage(p => Math.min(Math.ceil(reportRows.length / reportRowsPerPage), p + 1))}
+                        disabled={reportCurrentPage === Math.ceil(reportRows.length / reportRowsPerPage)}
+                        className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold disabled:opacity-50 hover:bg-slate-100"
+                      >
+                        Siguiente
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══════════════ TAB SAP (INGRESO EQUIPOS SAP) ══════════════ */}
+        {activeTab === 'sap' && (
+          <SapModule onNotify={showNotification} authRole={authRole} />
+        )}
       </main>
 
       <footer className="bg-slate-900 py-6 border-t border-slate-700 mt-auto text-center text-xs text-slate-400">
@@ -1416,7 +1765,7 @@ export default function DespachoPagina() {
                         <td className="p-2 border font-bold text-slate-900">{u.marca}</td>
                         <td className="p-2 border text-slate-700">{u.modelo}</td>
                         <td className="p-2 border text-slate-600">{u.agencia || 'Por Defecto'}</td>
-                        <td className="p-2 border text-center"><span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${estadoBadgeClass(u.estado)}`}>{u.estado.toUpperCase().startsWith('PARA DEVOLVER') || u.estado.toUpperCase() === 'NOTA DE CREDITO VALIDACION SAP' ? 'ENTREGADO' : u.estado}</span></td>
+                        <td className="p-2 border text-center"><span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${estadoBadgeClass(u.estado)}`}>{u.estado.toUpperCase().includes('DEVOL') || u.estado.toUpperCase().includes('NOTA') ? 'ENTREGADO' : u.estado}</span></td>
                       </tr>
                     ))}
                   </tbody>
