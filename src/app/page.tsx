@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import ClaimsXiaomiModule from './claims-xiaomi/ClaimsXiaomiModule';
+import ClaimsDtiModule from './claims-dti/ClaimsDtiModule';
 import {
   Card,
   DonutChart,
@@ -40,6 +41,7 @@ import {
   TrendingUp,
   ShieldCheck,
   CreditCard,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 // --- MOCK DATA PARA ORDERRY ---
@@ -6061,6 +6063,7 @@ export default function DashboardMultimodular() {
           <Tab className={canSeeArea('Bodega') ? '' : 'hidden'} icon={Package}>📦 Bodega</Tab>
           <Tab className={canSeeAnyArea('Calidad', 'QA') ? '' : 'hidden'} icon={ShieldCheck}>✅ Calidad</Tab>
           <Tab className={canSeeArea('ERP Xiaomi') ? '' : 'hidden'} icon={CreditCard}>⚙️ ERP Xiaomi</Tab>
+          <Tab className={canSeeArea('ERP Xiaomi') ? '' : 'hidden'} icon={FileSpreadsheet}>📋 Claims - DTI</Tab>
           <Tab className={canSeeAnyArea('Bono Técnico', 'Taller') ? '' : 'hidden'} icon={Activity}>🏅 Bono Técnico</Tab>
         </TabList>
 
@@ -7992,6 +7995,13 @@ export default function DashboardMultimodular() {
           <TabPanel className={canSeeArea('ERP Xiaomi') ? '' : 'hidden'}>
             <div className="-m-6">
               <ClaimsXiaomiModule ordersData={ordersData} />
+            </div>
+          </TabPanel>
+
+          {/* ─── PESTAÑA NUEVA: CLAIMS DTI ─────────────────────── */}
+          <TabPanel className={canSeeArea('ERP Xiaomi') ? '' : 'hidden'}>
+            <div className="-m-6">
+              <ClaimsDtiModule />
             </div>
           </TabPanel>
 

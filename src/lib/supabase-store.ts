@@ -823,6 +823,88 @@ export const getDespachoReportRows = async (filters?: {
     folioPdv: row.payload?.['FOLIO PDV'] || row.payload?.folioPdv || '',
     fechaFacturacion: row.payload?.['FECHA DE VENTA -POP *'] || row.payload?.['FECHA DE VENTA -POP'] || row.payload?.fechaVentaPop || row.payload?.['Fecha de venta -pop'] || row.payload?.['Fecha de Venta -POP'] || row.payload?.fechaFacturacion || '',
     fechaActivacion: row.payload?.fechaActivacion || '',
+    rawRecord: (() => {
+      const p = row.payload || {};
+      const optimized: any = {
+        custom_fields: p.custom_fields,
+        branch: p.branch,
+        client: p.client,
+        kindof_good: p.kindof_good,
+        status: p.status,
+        status_history: p.status_history,
+        tipo_orden: p.tipo_orden,
+        historial_estados: p.historial_estados,
+        grupo_dispositivo: p.grupo_dispositivo,
+        'CANAL DE INGRESO': p['CANAL DE INGRESO'],
+        'Grupo de dispositivos': p['Grupo de dispositivos'],
+        'Tipo de orden': p['Tipo de orden'],
+        'Estado': p['Estado'],
+        'estado': p['estado'],
+        'suma_aprobada_cliente': p['suma_aprobada_cliente'],
+        created_at: p.created_at || p['Creado en'] || p['Creado'],
+        id: p.id || p.id_orden || p.ordenNumero || p.order_name || row.order_name || row.order_id || p['Orden #'],
+        order_type: p.order_type || p.tipo_orden || p.tipoOrden || p['Tipo de orden'],
+        client_name: p.client?.name || p.cliente || p['Nombre del cliente'],
+        phone: p.client?.phone?.[0]?.number || p.telefono || p['Teléfono del cliente'],
+        address: p.client?.address || p.direccion || p['Dirección'],
+        email: p.client?.email || p.email,
+        brand: p.brand?.name || p.brand || p.marca || p.marcaDispositivo || p['Marca del dispositivo'] || row.marca,
+        model: p.model?.name || p.model || p.modelo || p.modeloDispositivo || p['Modelo de dispositivo'] || row.modelo,
+        serial: p.serial || p.imei || p['Número de serie'] || row.imei,
+        'Marca del dispositivo': p.brand?.name || p.brand || p.marca || p.marcaDispositivo || p['Marca del dispositivo'] || row.marca,
+        'Modelo de dispositivo': p.model?.name || p.model || p.modelo || p.modeloDispositivo || p['Modelo de dispositivo'] || row.modelo,
+        'Modelo': p.model?.name || p.model || p.modelo || p.modeloDispositivo || p['Modelo de dispositivo'] || row.modelo,
+
+        engineer_notes: p.engineer_notes || p.notas,
+
+        works: p.works || p.servicios || p.serviciosObras,
+        parts: p.parts || p.repuestos,
+        'Mal funcionamiento': p['Mal funcionamiento *'] || p['Mal funcionamiento'] || p.malFuncionamiento || p.falla || row.falla,
+        grupo_dispositivo: p.grupo_dispositivo || p.grupoDispositivo || row.grupo || p['Grupo de dispositivos'],
+        'CANAL DE INGRESO': p.canalIngreso || p.origen || p.dealer || p.sucursal || p['CANAL DE INGRESO'] || p.canal_ingreso || row.origen || row.dealer || row.sucursal || row.payload?.canalIngreso,
+        'CANAL INGRESO': p.canalIngreso || p.origen || p.dealer || p.sucursal || p['CANAL INGRESO'] || p.canal_ingreso || row.origen || row.dealer || row.sucursal || row.payload?.canalIngreso,
+        'FECHA DE VENTA -POP': p['FECHA DE VENTA -POP *'] || p['FECHA DE VENTA -POP'] || p.fechaVentaPop || p.fechaFacturacion || row.payload?.fechaFacturacion,
+        'COLOR': p.color || p.COLOR || row.color,
+        'GUIAS CAEX': p.guiasCaex || p['GUIAS CAEX'] || p.guia || row.guia,
+        'GARANTIA': p.garantia || p['GARANTIA'] || row.payload?.garantia,
+        'TIPO DE INGRESO': p.tipoIngreso || p.operador || p.retail || p['TIPO DE INGRESO'] || row.operador || row.retail || row.payload?.tipoIngreso,
+        'FOLIO PDV': p['FOLIO PDV'] || p.folioPdv || row.payload?.folioPdv,
+        'Precio estimado': p['Precio estimado'] || p.precioEstimado || p.precio,
+        'ACCION': p.accion || p['ACCION'],
+        'NUMERO DE TRASLADO': p.numeroTraslado || p['NUMERO DE TRASLADO'] || p['NUMERO  DE TRASLADO'],
+        'NUMERO  DE TRASLADO': p.numeroTraslado || p['NUMERO DE TRASLADO'] || p['NUMERO  DE TRASLADO'],
+        'GoodID': p.GoodID || p.goodId,
+        'B2B': p.B2B || p.b2b,
+        'COMENTARIOS': p.comentarios || p['COMENTARIOS'],
+        'IN COURIER': p.inCourier || p['IN COURIER'],
+        'NOTA': p.nota || p['NOTA'],
+        'NOTA:': p.nota || p['NOTA'] || p['NOTA:'],
+      };
+      
+      // Asegurar que las 64 columnas estén disponibles si están en la raíz
+      const headers = [
+        'Creado en', 'Creado', 'Orden #', 'Tipo de orden', 'Estado', 'Nombre del cliente', 
+        'Teléfono del cliente', 'Dirección', 'Email', 'Grupo de dispositivos', 'Dispositivo', 
+        'Marca', 'Modelo', 'Número de serie / IMEI', 'Contraseña', 'Apariencia', 
+        'Defecto (Mal funcionamiento)', 'Lugar de compra', 'Color', 'Nota del cliente', 
+        'Nombre comercial del modelo', 'Estado del equipo', 'Reingreso', 'Defecto reportado por el cliente', 
+        'Reparación previa', 'Requiere copia de seguridad', 'Contraseña de equipo', 'Defecto real', 
+        'Cotización inicial de reparación', 'Plazo de reparación de servicio urgente', 
+        'Tiempo estimado de finalización', 'Trabajos de reparación', 'Tipo de garantía de servicios', 
+        'Tipo de garantía de repuestos', 'Notas o Comentarios Privados', 'Comentario Público para el cliente', 
+        'Costo del servicio', 'Descuento de la orden', 'Monto total', 'Impuesto', 'Monto pagado', 
+        'Costo de repuestos (Con IGV)', 'Formas de pago', 'Sucursal', 'Asignado a', 'Etiquetas', 
+        'NPS Score', 'NPS Comment', 'Suma total facturada', 'Fecha de facturación', 'Días en estado', 
+        'Fecha de venta -pop', 'FOLIO PDV', 'Garantía del dispositivo', 'País', 
+        'Suma total de caja registradora', 'Manager', 'Canal de Ingreso', 
+        'Suma de la orden - Costo de repuestos', 'Valor residual (Facturado - Costos totales)', 
+        'Costos totales', 'Código QR', 'Recomendación de NPS', 'Canal de adquisición de clientes'
+      ];
+      headers.forEach(h => {
+        if (p[h] !== undefined) optimized[h] = p[h];
+      });
+      return optimized;
+    })(),
   }));
 };
 
