@@ -152,8 +152,28 @@ function pickTargetStatus(
   const wantsNc = isNotaCreditoSourceStatus(currentStatusName);
   const wantsLifeOne = isLifeOneSourceStatus(currentStatusName);
   const wantsBodegaClaro = isClaroBodegaSourceStatus(currentStatusName);
+  const wantsCambioAgencia = currentStatusName.toUpperCase().includes('CAMBIO EN AGENCIA');
 
   const findExactLoose = (value: string) => catalog.find((s) => loose(s.name) === loose(value));
+
+  if (wantsCambioAgencia) {
+    const caCandidates = [
+      'ENTREGADO - CAMBIO EN AGENCIA',
+      'ENTREGADO-CAMBIO EN AGENCIA',
+      'ENTREGADO CAMBIO EN AGENCIA',
+    ];
+
+    for (const ca of caCandidates) {
+      const match = findExactLoose(ca);
+      if (match) return match;
+    }
+
+    const containsCa = catalog.find((s) => {
+      const n = normalizeStatusName(s.name);
+      return n.includes('ENTREGADO') && n.includes('CAMBIO') && n.includes('AGENCIA');
+    });
+    if (containsCa) return containsCa;
+  }
 
   if (wantsNc) {
     const ncCandidates = [
