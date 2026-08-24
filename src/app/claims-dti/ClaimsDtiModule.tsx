@@ -21,7 +21,7 @@ export default function ClaimsDtiModule() {
   const [hasProcessed, setHasProcessed] = useState(false);
 
   // TanStack Table state
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sorting, setSorting] = useState<any[]>([]);
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 50 });
 
   // Add date filters
@@ -233,7 +233,7 @@ export default function ClaimsDtiModule() {
             </Card>
             <Card decoration="top" decorationColor="amber">
               <Text>Monto Total (Total Claim)</Text>
-              <Metric>Q {totalClaimAmount.toFixed(2)}</Metric>
+              <Metric>$ {totalClaimAmount.toFixed(2)}</Metric>
               <Text className="text-xs text-slate-400 mt-1">Incluye IVA (12%)</Text>
             </Card>
           </Grid>

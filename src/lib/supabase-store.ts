@@ -388,18 +388,45 @@ export const saveDespachoConduce = async (conduce: any) => {
   return rows.length;
 };
 
-export const getDespachoConduces = async (options?: { page?: number; pageSize?: number }) => {
+export const getDespachoConduces = async (options?: { page?: number; pageSize?: number; searchTerm?: string }) => {
   const supabase = getSupabaseAdmin();
   const page = Math.max(1, Number(options?.page || 1));
   const pageSize = Math.min(100, Math.max(1, Number(options?.pageSize || 20)));
+  const searchTerm = (options?.searchTerm || '').trim();
+
+  let headerQuery = supabase
+    .from('despacho_conduces')
+    .select('conduce_id, fecha, doa, courrier, numero_guia, precinto, origen, operador, retail, dealer, sucursal', { count: 'exact' })
+    .order('created_at', { ascending: false });
+
+  if (searchTerm) {
+    const searchParam = `%${searchTerm}%`;
+    const { data: searchRows } = await supabase
+      .from('despacho_conduce_rows')
+      .select('conduce_id')
+      .or(`imei.ilike.${searchParam},order_name.ilike.${searchParam}`);
+      
+    const { data: searchHeaders } = await supabase
+      .from('despacho_conduces')
+      .select('conduce_id')
+      .or(`conduce_id.ilike.${searchParam},courrier.ilike.${searchParam},numero_guia.ilike.${searchParam},dealer.ilike.${searchParam}`);
+      
+    const ids = new Set([
+      ...(searchRows || []).map((r: any) => r.conduce_id),
+      ...(searchHeaders || []).map((h: any) => h.conduce_id)
+    ]);
+    const matchedIds = Array.from(ids);
+    
+    if (matchedIds.length === 0) {
+      return { items: [], total: 0, page, pageSize, latestConduceId: null };
+    }
+    headerQuery = headerQuery.in('conduce_id', matchedIds);
+  }
+
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
 
-  const { data: headers, error: headersError, count: headersCount } = await supabase
-    .from('despacho_conduces')
-    .select('conduce_id, fecha, doa, courrier, numero_guia, precinto, origen, operador, retail, dealer, sucursal', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(from, to);
+  const { data: headers, error: headersError, count: headersCount } = await headerQuery.range(from, to);
 
   throwIfError(headersError, 'despacho_conduces');
 
@@ -834,20 +861,18 @@ export const getDespachoReportRows = async (filters?: {
         status_history: p.status_history,
         tipo_orden: p.tipo_orden,
         historial_estados: p.historial_estados,
-        grupo_dispositivo: p.grupo_dispositivo,
-        'CANAL DE INGRESO': p['CANAL DE INGRESO'],
         'Grupo de dispositivos': p['Grupo de dispositivos'],
         'Tipo de orden': p['Tipo de orden'],
         'Estado': p['Estado'],
         'estado': p['estado'],
         'suma_aprobada_cliente': p['suma_aprobada_cliente'],
-        created_at: p.created_at || p['Creado en'] || p['Creado'],
+        created_at: p.created_at || p['Creado en'] || p['Creado'] || row.created_at,
         id: p.id || p.id_orden || p.ordenNumero || p.order_name || row.order_name || row.order_id || p['Orden #'],
-        order_type: p.order_type || p.tipo_orden || p.tipoOrden || p['Tipo de orden'],
-        client_name: p.client?.name || p.cliente || p['Nombre del cliente'],
-        phone: p.client?.phone?.[0]?.number || p.telefono || p['Teléfono del cliente'],
-        address: p.client?.address || p.direccion || p['Dirección'],
-        email: p.client?.email || p.email,
+        order_type: p.order_type || p.tipo_orden || p.tipoOrden || p['Tipo de orden'] || row.tipo_orden || row.order_type,
+        client_name: p.client?.name || p.cliente || p['Nombre del cliente'] || row.cliente || row.client_name,
+        phone: p.client?.phone?.[0]?.number || p.telefono || p['Teléfono del cliente'] || row.telefono || row.phone,
+        address: p.client?.address || p.direccion || p['Dirección'] || row.direccion || row.address,
+        email: p.client?.email || p.email || row.email,
         brand: p.brand?.name || p.brand || p.marca || p.marcaDispositivo || p['Marca del dispositivo'] || row.marca,
         model: p.model?.name || p.model || p.modelo || p.modeloDispositivo || p['Modelo de dispositivo'] || row.modelo,
         serial: p.serial || p.imei || p['Número de serie'] || row.imei,

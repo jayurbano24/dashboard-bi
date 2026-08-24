@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import ClaimsXiaomiModule from './claims-xiaomi/ClaimsXiaomiModule';
 import ClaimsDtiModule from './claims-dti/ClaimsDtiModule';
+import { normalizeDeviceModel } from '@/lib/model-aliases';
 import {
   Card,
   DonutChart,
@@ -640,7 +641,8 @@ const extractModelFromOrder = (order: Record<string, any>) => {
   ];
 
   const raw = candidates.find((value) => typeof value === 'string' && value.trim())?.trim();
-  return raw ? cleanDispatchLabel(raw) : 'Sin Modelo';
+  if (!raw) return 'Sin Modelo';
+  return normalizeDeviceModel(cleanDispatchLabel(raw));
 };
 
 const extractSkuFromModelText = (value: string | null | undefined) => {

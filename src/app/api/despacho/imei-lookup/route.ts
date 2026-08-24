@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeDeviceModel } from '@/lib/model-aliases';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -63,7 +64,9 @@ function extractModel(title: string, brand: string): string {
   if (lastSlash > 0) {
     cleaned = cleaned.substring(0, lastSlash).trim();
   }
-  return cleaned || 'Sin modelo';
+  const model = cleaned || 'Sin modelo';
+  // Unificar variantes conocidas (ej. ZXV10 Android10/12 -> ZXV10 B866V)
+  return normalizeDeviceModel(model);
 }
 
 /** Extract SAP code — typically after the last " / " in the title */

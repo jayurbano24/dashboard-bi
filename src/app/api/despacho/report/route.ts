@@ -62,7 +62,20 @@ export async function GET(request: Request) {
       const engine = new ReportingEngine();
       const processedRows = engine.process(rows as any[], template, region);
 
-      if (formatParam === 'csv' || formatParam === 'xlsx') {
+      if (formatParam === 'xlsx') {
+        const XLSX = require('xlsx');
+        const worksheet = XLSX.utils.json_to_sheet(processedRows);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Reporte');
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+        
+        return new Response(buffer as any, {
+          headers: {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition': `attachment; filename="Reporte_${template}_${new Date().toISOString().slice(0, 10)}.xlsx"`,
+          },
+        });
+      } else if (formatParam === 'csv') {
         const csvContent = jsonToCsv(processedRows);
         return new Response(csvContent, {
           headers: {

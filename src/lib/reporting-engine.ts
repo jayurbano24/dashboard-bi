@@ -246,28 +246,47 @@ export class TcwMasterStrategy implements ReportStrategy {
   name = 'TCW_MASTER';
 
   transform(rows: UnifiedReportRow[]): Record<string, any>[] {
-    return rows.map((row) => ({
-      'No. Conduce': row.conduceId,
-      'Fecha/Hora': row.fecha,
-      'Despachado Por': row.despachadoPor,
-      'DOA': row.doa ? 'SÍ' : 'NO',
-      'Courier': row.courrier,
-      'Guía Courier': row.numeroGuia,
-      'Precinto': row.precinto,
-      'Origen': row.origen,
-      'Operador': row.operador,
-      'Retail': row.retail,
-      'Dealer': row.dealer,
-      'Sucursal': row.sucursal,
-      'IMEI': row.imei,
-      'Serie': row.serie,
-      'ID Orden': row.orderId,
-      'Nombre Orden': row.orderName,
-      'Marca': row.marca,
-      'Modelo': row.modelo,
-      'Grupo': row.grupo,
-      'Estado': row.estado,
-    }));
+    const formatDate = (val: any): string => {
+      if (!val) return '';
+      const d = new Date(val);
+      if (isNaN(d.getTime())) return String(val);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+
+    return rows.map((row) => {
+      const isPlaceholder = (s: string) => !s || s === '--ORIGEN--' || s === '--RETAIL--' || s === 'Sin Sucursal' || s === 'OPERADOR';
+
+      return {
+        'No. Conduce': row.conduceId,
+        'Fecha/Hora': formatDate(row.fecha),
+        'Despachado Por': row.despachadoPor,
+        'DOA': row.doa ? 'SÍ' : 'NO',
+        'Courier': row.courrier,
+        'Guía Courier': row.numeroGuia,
+        'Precinto': row.precinto,
+        'Origen': isPlaceholder(row.origen) && row.canalIngreso ? row.canalIngreso : row.origen,
+        'Operador': isPlaceholder(row.operador) && row.tipoIngreso ? row.tipoIngreso : row.operador,
+        'Retail': isPlaceholder(row.retail) && row.cliente ? row.cliente : row.retail,
+        'Dealer': row.dealer,
+        'Sucursal': isPlaceholder(row.sucursal) ? '' : row.sucursal,
+        'IMEI': row.imei,
+        'Serie': row.serie,
+        'ID Orden': row.orderId,
+        'Nombre Orden': row.orderName,
+        'Marca': row.marca,
+        'Modelo': row.modelo,
+        'Grupo': row.grupo,
+        'Estado': row.estado,
+        'Cliente': row.cliente || 'SIN REGISTRO',
+        'Teléfono': row.telefono || 'N/A',
+        'Falla': row.falla || 'N/A',
+        'Garantía': row.garantia || 'N/A',
+        'Tipo de Orden': row.tipo_orden || 'N/A',
+        'Canal de Ingreso': row.canalIngreso || 'N/A',
+        'Técnico': row.tecnico || 'N/A',
+      };
+    });
   }
 }
 

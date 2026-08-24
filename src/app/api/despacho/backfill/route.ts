@@ -92,8 +92,8 @@ export async function GET(request: Request) {
     const missingRows = rows.filter((row) => {
       const payload = row.payload || {};
       
-      // Si ya fue procesado correctamente por el backfill, lo ignoramos para no crear un bucle infinito
-      if (payload.backfilled) return false;
+      // Si ya fue procesado correctamente por el backfill v2, lo ignoramos para no crear un bucle infinito
+      if (payload.backfilled_v2) return false;
 
       const missingCreatedAt = !payload.created_at;
       const missingOrderName = !row.order_name && !payload.order_name && !payload.ordenNumero;
@@ -332,7 +332,8 @@ export async function GET(request: Request) {
               marcaDispositivo: marca,
               modeloDispositivo: modelo,
               modeloSap,
-              backfilled: true
+              backfilled: true,
+              backfilled_v2: true
             };
 
             // Update payload + order_name column

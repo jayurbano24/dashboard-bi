@@ -1,5 +1,6 @@
 'use client';
 
+import * as XLSX from 'xlsx';
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -253,6 +254,8 @@ export default function DespachoPagina() {
   const [conduces, setConduces] = useState<Conduce[]>([]);
   const [activeTab, setActiveTab] = useState<'despacho' | 'historial' | 'reporte' | 'sap'>('despacho');
   const [selectedConduce, setSelectedConduce] = useState<Conduce | null>(null);
+  const [conducePage, setConducePage] = useState(1);
+  const CONDUCE_PAGE_SIZE = 10;
   const [searchTerm, setSearchTerm] = useState('');
 
   // --- Report Engine States ---
@@ -350,10 +353,11 @@ export default function DespachoPagina() {
 
   const mountedRef = useRef(false);
 
-  const loadConducesFromServer = async (page = 1) => {
+  const loadConducesFromServer = async (page = 1, forceSearchTerm?: string) => {
+    const activeSearch = typeof forceSearchTerm === 'string' ? forceSearchTerm : searchTerm;
     setHistoryLoading(true);
     try {
-      const res = await fetch(`/api/despacho/save-sheet?page=${page}&pageSize=${HISTORY_PAGE_SIZE}`, { cache: 'no-store' });
+      const res = await fetch(`/api/despacho/save-sheet?page=${page}&pageSize=${HISTORY_PAGE_SIZE}&searchTerm=${encodeURIComponent(activeSearch)}`, { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || 'No se pudo cargar historial de Supabase.');
@@ -528,10 +532,22 @@ export default function DespachoPagina() {
     if (sapBatchList.length === 0) { showNotification('Agregue al menos un equipo al lote.', 'error'); return; }
     setIsSaving(true);
     try {
+      const resolvedMaterial = sapMaterial.trim() || sapBatchList[0]?.material || '';
+      const payload = {
+        material: resolvedMaterial,
+        fechaAceptacion: sapBatchList[0]?.dia || new Date().toISOString().slice(0, 10),
+        equipos: sapBatchList.map(eq => ({
+          ...eq,
+          material: (eq.material && eq.material !== 'N/A') ? eq.material : resolvedMaterial,
+          fechaAceptacion: eq.dia,
+          razonNoOrderry: eq.foundInOrderry ? undefined : (eq.razonNoOrderry || 'No aplica'),
+        })),
+      };
+
       const res = await fetch('/api/despacho/sap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sapBatchList),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok && data.ok) {
@@ -564,37 +580,60 @@ export default function DespachoPagina() {
     }
   };
 
-  const exportSapToCsv = () => {
+  const exportSapToExcel = () => {
     if (!sapHistoryList.length) {
       showNotification('No hay datos de historial SAP para exportar.', 'error');
       return;
     }
 
-    const headers = ['AGENCIA', 'IMEI FISICO', 'No. De DOCUM', 'MARCA', 'MODELO', 'GUIA', 'DIA', 'COMENTARIO'];
-    const csvRows = [headers.join(',')];
+    const headers = ['AGENCIA', 'IMEI FISICO', 'No. De DOCUM', 'MARCA', 'MODELO', 'GUIA', 'DIA', 'COMENTARIO', 'ESTATUS', 'FECHA REGISTRO', 'USUARIO'];
+    const rows = sapHistoryList.map(r => ([
+      r.agencia || '',
+      r.imeiFisico,
+      r.noDocumento || '',
+      r.marca || '',
+      r.modelo || '',
+      r.guia || '',
+      r.dia || '',
+      r.comentario || '',
+      r.orderryStatus || '',
+      r.createdAt ? new Date(r.createdAt).toLocaleString() : '',
+      r.usuarioRegistro || ''
+    ]));
 
-    for (const r of sapHistoryList) {
-      const values = [
-        `"${String(r.agencia || '').replace(/"/g, '""')}"`,
-        r.imeiFisico,
-        `"${String(r.noDocumento || '').replace(/"/g, '""')}"`,
-        r.marca,
-        `"${String(r.modelo || '').replace(/"/g, '""')}"`,
-        `"${String(r.guia || '').replace(/"/g, '""')}"`,
-        r.dia,
-        `"${String(r.comentario || '').replace(/"/g, '""')}"`
-      ];
-      csvRows.push(values.join(','));
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Historial SAP');
+    XLSX.writeFile(workbook, `Historial_SAP_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const exportHistoryToExcel = () => {
+    if (!conduces.length) {
+      showNotification('No hay datos de historial para exportar.', 'error');
+      return;
     }
 
-    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `Equipos_SAP_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const headers = ['NO. CONDUCE', 'FECHA', 'DESPACHADO POR', 'TIPO DESTINO', 'AGENCIA / DEALER', 'SUCURSAL', 'COURRIER', 'GUIA', 'PRECINTO', 'CANTIDAD ESCANEADOS'];
+    const rows = conduces.map(c => {
+      const { date, time } = formatHistoryDateTime(c.fecha);
+      return [
+        c.id,
+        `${date} ${time}`.trim(),
+        c.despachadoPor || '',
+        c.operador !== '--OPERADOR--' ? c.operador : c.retail !== '--RETAIL--' ? c.retail : c.origen,
+        c.dealer || '',
+        c.sucursal || '',
+        c.courrier || '',
+        c.numeroGuia || '',
+        c.precinto || '',
+        c.unidadesDespachadas.length
+      ];
+    });
+
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Historial Conduces');
+    XLSX.writeFile(workbook, `Historial_Conduces_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   useEffect(() => {
@@ -1154,6 +1193,7 @@ export default function DespachoPagina() {
 
       setConduces((prev) => [nuevo, ...prev]);
       setSelectedConduce(nuevo);
+      setConducePage(1);
       showNotification(`📋 Conduce registrado en Supabase (${saveData.rows} filas).`);
       await loadConducesFromServer(1);
     } catch {
@@ -1208,16 +1248,6 @@ export default function DespachoPagina() {
     setIsSaving(false);
   };
 
-  const filteredConduces = conduces.filter((c) => {
-    const dispatcher = String(c.despachadoPor || '').trim() || dispatchUserName;
-    const s = searchTerm.toLowerCase();
-    return c.id.toLowerCase().includes(s)
-      || dispatcher.toLowerCase().includes(s)
-      || c.courrier.toLowerCase().includes(s)
-      || c.numeroGuia.toLowerCase().includes(s)
-      || c.dealer.toLowerCase().includes(s)
-      || c.unidadesDespachadas.some((u) => u.imei.toLowerCase().includes(s));
-  });
   const totalHistoryPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
@@ -1230,10 +1260,10 @@ export default function DespachoPagina() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-800 font-sans flex flex-col">
+    <div className="min-h-screen bg-slate-100 text-slate-800 font-sans flex flex-col print:block print:bg-white print:min-h-0">
 
       {/* HEADER */}
-      <header className="bg-slate-900 text-white shadow-md py-4 px-6 flex justify-between items-center border-b border-slate-700">
+      <header className="bg-slate-900 text-white shadow-md py-4 px-6 flex justify-between items-center border-b border-slate-700 print:hidden">
         <div className="flex items-center space-x-3">
           <Link href="/" className="flex items-center gap-1 text-slate-400 hover:text-white transition text-xs mr-1" title="Dashboard">
             <ArrowLeft className="w-4 h-4" />
@@ -1265,7 +1295,7 @@ export default function DespachoPagina() {
 
       {/* API PANEL */}
       {showApiSettings && (
-        <div className="bg-slate-800 text-white p-4 border-b border-slate-700">
+        <div className="bg-slate-800 text-white p-4 border-b border-slate-700 print:hidden">
           <div className="max-w-3xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
             <div>
               <h3 className="text-sm font-bold text-emerald-400 flex items-center"><Settings className="w-4 h-4 mr-1.5" />Conexión Orderry</h3>
@@ -1277,7 +1307,7 @@ export default function DespachoPagina() {
       )}
 
       {/* TABS */}
-      <div className="bg-white border-b border-slate-200 shadow-sm flex overflow-x-auto">
+      <div className="bg-white border-b border-slate-200 shadow-sm flex overflow-x-auto print:hidden">
         {(['despacho', 'historial', 'reporte', 'sap'] as const).map((tab) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             className={`flex items-center px-6 py-4 border-b-2 font-semibold text-sm transition-colors whitespace-nowrap ${activeTab === tab ? 'border-[#001e6c] text-[#001e6c] bg-slate-50' : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50'}`}
@@ -1292,13 +1322,13 @@ export default function DespachoPagina() {
 
       {/* NOTIFICACIÓN */}
       {notificacion && (
-        <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-xl text-white flex items-center space-x-3 ${notificacion.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`}>
+        <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-xl text-white flex items-center space-x-3 ${notificacion.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'} print:hidden`}>
           {notificacion.type === 'error' ? <XCircle className="w-5 h-5 shrink-0" /> : <CheckCircle className="w-5 h-5 shrink-0" />}
           <span className="text-sm font-semibold">{notificacion.message}</span>
         </div>
       )}
 
-      <main className="flex-1 p-4 md:p-6 max-w-7xl w-full mx-auto">
+      <main className="flex-1 p-4 md:p-6 max-w-7xl w-full mx-auto print:hidden">
 
         {/* ══════════════ TAB DESPACHO ══════════════ */}
         {activeTab === 'despacho' && (
@@ -1573,21 +1603,25 @@ export default function DespachoPagina() {
                 <h2 className="text-lg font-bold text-[#001e6c] flex items-center"><FileText className="w-5 h-5 mr-2" />Correlativos TCSAL</h2>
                 <p className="text-xs text-slate-500">Historial verificado con control consecutivo.</p>
               </div>
-              <div className="relative w-full md:w-80">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-                <input type="text" placeholder="Buscar IMEI, Conduce, Destinatario o Despachado por…" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-[#001e6c]" />
+              <div className="flex flex-wrap items-center gap-2 relative w-full md:w-auto">
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input type="text" placeholder="Buscar IMEI, Conduce, Destinatario o Despachado por…" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') loadConducesFromServer(1); }} className="w-full md:w-80 pl-9 pr-4 py-2 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-[#001e6c]" />
+                </div>
+                <button onClick={() => loadConducesFromServer(1)} className="px-3 py-2 bg-[#001e6c] hover:bg-[#00155a] text-white font-bold rounded text-xs transition">Buscar</button>
+                <button onClick={exportHistoryToExcel} className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded text-xs transition flex items-center gap-1"><FileText className="w-4 h-4" /> Exportar Excel</button>
               </div>
             </div>
             {historyTotal === 0 ? (
               <div className="p-12 text-center text-slate-400"><p className="text-sm">No hay conduces registrados.</p></div>
-            ) : filteredConduces.length === 0 ? (
+            ) : conduces.length === 0 ? (
               <div className="p-12 text-center text-slate-400"><p className="text-sm">No hay resultados para la búsqueda en esta página.</p></div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead><tr className="bg-slate-100 text-slate-600 font-bold border-b"><th className="p-3 border">No. Conduce</th><th className="p-3 border">Fecha / Hora</th><th className="p-3 border">Despachado por</th><th className="p-3 border">Tipo Destino</th><th className="p-3 border">Guía / Courier</th><th className="p-3 border">Precinto</th><th className="p-3 border text-center">Unidades</th><th className="p-3 border text-center">Acciones</th></tr></thead>
                   <tbody className="divide-y divide-slate-200">
-                    {filteredConduces.map((cond) => (
+                    {conduces.map((cond) => (
                       <tr key={cond.id} className="hover:bg-slate-50">
                         <td className="p-3 border font-bold font-mono text-[#001e6c]">{cond.id}</td>
                         <td className="p-3 border whitespace-nowrap"><div className="font-semibold text-slate-700">{formatHistoryDateTime(cond.fecha).date}</div><div className="text-[10px] font-mono text-slate-500">{formatHistoryDateTime(cond.fecha).time}</div></td>
@@ -2072,7 +2106,7 @@ export default function DespachoPagina() {
                   <input type="date" value={sapHistoryEndDate} onChange={(e) => setSapHistoryEndDate(e.target.value)} className="p-1.5 border border-slate-300 rounded" />
                   <input type="text" placeholder="Buscar IMEI, Doc, Agencia..." value={sapHistorySearch} onChange={(e) => setSapHistorySearch(e.target.value)} className="p-1.5 border border-slate-300 rounded w-48" />
                   <button onClick={loadSapHistory} disabled={sapHistoryLoading} className="px-3 py-1.5 bg-[#001e6c] hover:bg-[#00155a] text-white font-bold rounded transition">Filtrar</button>
-                  <button onClick={exportSapToCsv} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded transition flex items-center gap-1"><FileText className="w-4 h-4" /> Exportar</button>
+                  <button onClick={exportSapToExcel} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded transition flex items-center gap-1"><FileText className="w-4 h-4" /> Exportar</button>
                 </div>
               </div>
 
@@ -2208,13 +2242,13 @@ export default function DespachoPagina() {
 
       {/* MODAL: FICHA CONDUCE */}
       {selectedConduce && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl max-w-3xl w-full shadow-2xl overflow-hidden border">
-            <div className="bg-[#001e6c] text-white px-6 py-4 flex justify-between items-center">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4 print:static print:block print:inset-auto print:bg-transparent print:p-0">
+          <div className="bg-white rounded-xl max-w-3xl w-full shadow-2xl overflow-hidden border print:border-none print:shadow-none print:rounded-none print:w-full print:max-w-none flex flex-col max-h-[90vh] print:max-h-none">
+            <div className="bg-[#001e6c] text-white px-6 py-4 flex justify-between items-center print:hidden shrink-0">
               <span className="text-xs font-bold uppercase tracking-wider flex items-center"><Printer className="w-4 h-4 mr-2 text-amber-400" />CONDUCE LISTO PARA IMPRESIÓN</span>
               <button onClick={() => setSelectedConduce(null)} className="text-white hover:text-amber-400 text-xl font-bold">&times;</button>
             </div>
-            <div className="p-8" id="printable-conduce">
+            <div className="p-8 print:p-0 overflow-y-auto print:overflow-visible flex-1" id="printable-conduce">
               <div className="flex justify-between items-start border-b-2 border-slate-900 pb-6 mb-6">
                 <div>
                   <h1 className="text-xl font-black text-slate-900 tracking-tight">CONDUCE DE DESPACHO DE EQUIPOS</h1>
@@ -2277,7 +2311,24 @@ export default function DespachoPagina() {
                 <h3 className="text-[11px] font-extrabold uppercase tracking-wider text-[#001e6c] mb-2 border-b pb-1">Detalle de Entrega</h3>
                 <table className="w-full text-left border-collapse border text-[11px]">
                   <thead><tr className="bg-slate-100 border-b text-slate-800 font-bold uppercase"><th className="p-2 border text-center w-10">No.</th><th className="p-2 border">IMEI / Serial</th><th className="p-2 border">No. Orden</th><th className="p-2 border">Grupo</th><th className="p-2 border">Marca</th><th className="p-2 border">Modelo</th><th className="p-2 border">Agencia</th><th className="p-2 border text-center">Estatus</th></tr></thead>
-                  <tbody>
+                  <tbody className="print:hidden">
+                    {selectedConduce.unidadesDespachadas.slice((conducePage - 1) * CONDUCE_PAGE_SIZE, conducePage * CONDUCE_PAGE_SIZE).map((u, i) => {
+                      const globalIndex = (conducePage - 1) * CONDUCE_PAGE_SIZE + i + 1;
+                      return (
+                        <tr key={u.imei} className="border-b hover:bg-slate-50 transition-colors">
+                          <td className="p-2 border text-center font-bold text-slate-500">{globalIndex}</td>
+                          <td className="p-2 border font-mono font-bold text-emerald-700">{u.imei}</td>
+                          <td className="p-2 border font-mono font-bold text-[#001e6c] whitespace-nowrap">{u.ordenNumero || '—'}</td>
+                          <td className="p-2 border text-slate-600 text-[10px]">{u.grupo || '—'}</td>
+                          <td className="p-2 border font-bold text-slate-900">{u.marca}</td>
+                          <td className="p-2 border text-slate-700">{u.modelo}</td>
+                          <td className="p-2 border text-slate-600">{u.agencia || 'Por Defecto'}</td>
+                          <td className="p-2 border text-center"><span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${estadoBadgeClass(u.estado)}`}>{u.estado.toUpperCase().includes('DEVOL') || u.estado.toUpperCase().includes('NOTA') ? 'ENTREGADO' : u.estado}</span></td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                  <tbody className="hidden print:table-row-group">
                     {selectedConduce.unidadesDespachadas.map((u, i) => (
                       <tr key={u.imei} className="border-b">
                         <td className="p-2 border text-center font-bold text-slate-500">{i + 1}</td>
@@ -2292,6 +2343,30 @@ export default function DespachoPagina() {
                     ))}
                   </tbody>
                 </table>
+                
+                {selectedConduce.unidadesDespachadas.length > CONDUCE_PAGE_SIZE && (
+                  <div className="mt-4 flex items-center justify-between bg-slate-100 p-2 rounded border border-slate-200 print:hidden">
+                    <span className="text-xs font-bold text-slate-600">
+                      Página {conducePage} de {Math.ceil(selectedConduce.unidadesDespachadas.length / CONDUCE_PAGE_SIZE)}
+                    </span>
+                    <div className="flex space-x-2">
+                      <button 
+                        onClick={() => setConducePage(p => Math.max(1, p - 1))} 
+                        disabled={conducePage === 1}
+                        className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-700 disabled:opacity-50 hover:bg-slate-50 transition"
+                      >
+                        Anterior
+                      </button>
+                      <button 
+                        onClick={() => setConducePage(p => Math.min(Math.ceil(selectedConduce.unidadesDespachadas.length / CONDUCE_PAGE_SIZE), p + 1))} 
+                        disabled={conducePage === Math.ceil(selectedConduce.unidadesDespachadas.length / CONDUCE_PAGE_SIZE)}
+                        className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold text-slate-700 disabled:opacity-50 hover:bg-slate-50 transition"
+                      >
+                        Siguiente
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
               {selectedConduce.unidadesDevolver.length > 0 && (
                 <div className="mb-6">
@@ -2318,7 +2393,7 @@ export default function DespachoPagina() {
                 <div className="border-t border-slate-400 pt-2"><p className="font-bold text-slate-800">Recibido Conforme</p><p className="text-slate-500 mt-1">Firma / Sello Sucursal</p></div>
               </div>
             </div>
-            <div className="bg-slate-100 px-6 py-4 flex justify-end space-x-3 border-t">
+            <div className="bg-slate-100 px-6 py-4 flex justify-end space-x-3 border-t print:hidden shrink-0">
               <button onClick={() => window.print()} className="px-4 py-2 bg-[#001e6c] hover:bg-[#00155a] text-white text-xs font-bold rounded transition flex items-center"><Printer className="w-4 h-4 mr-2 text-amber-400" />Imprimir Conduce</button>
               <button onClick={() => setSelectedConduce(null)} className="px-4 py-2 bg-slate-300 hover:bg-slate-400 text-slate-800 text-xs font-bold rounded transition">Cerrar Vista</button>
             </div>

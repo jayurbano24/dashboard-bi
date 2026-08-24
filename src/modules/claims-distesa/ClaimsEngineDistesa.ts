@@ -18,7 +18,7 @@ export interface ProcessedClaim {
   modelo: string;
   tipoOrden: string;
   estado: string;
-  transporte: 'vehículo' | 'motocicleta';
+  transporte: string;
   logistica: number;
   harvesting: number;
   partes: number;
@@ -130,10 +130,6 @@ export function processOrderryRawData(data: RawOrderryOrder[]): ProcessedClaim[]
     const grupoVal = raw.grupo_dispositivo || raw.grupoDispositivo || raw['Grupo de dispositivos'] || raw.kindof_good?.name || raw.kindof_good || raw.grupo || findVal(raw, ['grupo de dispositivo', 'grupo']);
     const grupoDispositivos = safeString(grupoVal);
 
-    
-    const tipoVal = findVal(raw, ['tipo de orden']) || raw.tipo_orden || raw.custom_fields?.f3129962;
-    const tipoOrden = safeString(tipoVal);
-    
     // historial_estados checking
     let historyStr = '';
     const histVal = findVal(raw, ['historial']);
@@ -147,6 +143,13 @@ export function processOrderryRawData(data: RawOrderryOrder[]): ProcessedClaim[]
 
     const estVal = findVal(raw, ['estado', 'status']);
     const estado = safeString(estVal || raw.status?.name);
+
+    const tipoVal = findVal(raw, ['tipo de orden']) || raw.tipo_orden || raw.custom_fields?.f3129962;
+    let tipoOrden = safeString(tipoVal);
+    
+    if (!tipoOrden && estado.includes('DEVOLUCIÓN')) {
+      tipoOrden = 'DEVOLUCION SAP';
+    }
 
     // 1. Canal de Ingreso Filter (DESACTIVADO PARA MOSTRAR TODOS LOS DATOS)
     // if (!canalIngreso) continue;
@@ -263,6 +266,8 @@ export function processOrderryRawData(data: RawOrderryOrder[]): ProcessedClaim[]
     // 1. Case: MANTENIMIENTOS
     if (tipoOrden.includes('MANTENIMIENTO') || estado.includes('MANTENIMIENTO')) {
       reparacion = 0.00; // Flat fee or 0 based on new matrix logic, let's keep it 0 as it's not in matrix
+      logistica = 0.00; // Según instrucciones, no se cobra logística ni mano de obra
+      harvesting = 0.00;
       statusCalc = 'MANTENIMIENTO';
     }
     // 2. Case: DOA / RETURN
@@ -386,12 +391,12 @@ export const getClaimRowValues = (claim: ProcessedClaim): Record<string, any> =>
     if (!val) {
       if (h === 'Creado en' || h === 'Creado') val = getValue(['created_at', 'Creado en', 'Creado']);
       else if (h === 'Orden #') val = claim.orderNumber;
-      else if (h === 'Tipo de orden') val = getValue(['order_type', 'tipo_orden', 'Tipo de orden']);
-      else if (h === 'Estado') val = getValue(['status', 'estado', 'Estado']);
-      else if (h === 'Nombre del cliente') val = getValue(['client_name', 'cliente', 'Nombre del cliente']);
-      else if (h === 'Teléfono del cliente') val = getValue(['phone', 'teléfono', 'Teléfono del cliente']);
-      else if (h === 'Dirección') val = getValue(['address', 'Dirección']);
-      else if (h === 'Email') val = getValue(['email', 'Email']);
+      else if (h === 'Tipo de orden') val = getValue(['order_type', 'tipo_orden', 'Tipo de orden']) || claim.tipoOrden;
+      else if (h === 'Estado') val = getValue(['status', 'estado', 'Estado']) || claim.estado;
+      else if (h === 'Nombre del cliente') val = getValue(['client_name', 'cliente', 'Nombre del cliente']) || 'SIN REGISTRO';
+      else if (h === 'Teléfono del cliente') val = getValue(['phone', 'teléfono', 'Teléfono del cliente']) || 'N/A';
+      else if (h === 'Dirección') val = getValue(['address', 'Dirección']) || 'N/A';
+      else if (h === 'Email') val = getValue(['email', 'Email']) || 'N/A';
       else if (h === 'Grupo de dispositivos') val = claim.grupoDispositivo;
       else if (h === 'Marca del dispositivo') val = getValue(['brand', 'marca', 'Marca del dispositivo']);
       else if (h === 'Modelo de dispositivo') val = claim.modelo;

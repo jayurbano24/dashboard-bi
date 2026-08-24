@@ -7,7 +7,8 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const page = Number(searchParams.get('page') || '1');
     const pageSize = Number(searchParams.get('pageSize') || '20');
-    const result = await getDespachoConduces({ page, pageSize });
+    const searchTerm = searchParams.get('searchTerm') || '';
+    const result = await getDespachoConduces({ page, pageSize, searchTerm });
     return NextResponse.json({ ok: true, ...result, via: 'supabase' });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message ?? 'Error al leer historial de Supabase.' }, { status: 500 });
