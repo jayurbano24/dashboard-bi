@@ -138,8 +138,9 @@ async function main() {
     const prefix = (canal.match(/^([A-Za-z0-9]+)/)?.[1] || '').toUpperCase();
     const region = catalog.getRegion(prefix);
 
-    const payloadStart = row.payload?.created_at || row.fecha || null;
-    const payloadEnd = row.payload?.closed_at || row.fecha_entrega || row.fecha || null;
+    const raw = (row.rawRecord || {}) as Record<string, unknown>;
+    const payloadStart = raw.created_at || row.fecha || null;
+    const payloadEnd = raw.closed_at || row.fecha_entrega || row.fecha || null;
     const syncStart = row.created_at || null;
     const syncEnd = row.closed_at || null;
 

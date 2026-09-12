@@ -114,11 +114,7 @@ export async function GET(request: Request) {
     }
 
     if (template === REPORT_TEMPLATE_SERVITOTAL) {
-      const dedupedRows = deduplicateReportRowsByOrder(
-        filterRowsByOrderCreatedAt(rows as Array<{ created_at?: string | null }>) as Parameters<
-          typeof deduplicateReportRowsByOrder
-        >[0],
-      );
+      const dedupedRows = deduplicateReportRowsByOrder(filterRowsByOrderCreatedAt(rows));
       const servitotalRows = dedupedRows.filter((row) =>
         isServitotalClient(String(row.cliente || '')),
       );
@@ -162,11 +158,7 @@ export async function GET(request: Request) {
     }
 
     if (template === REPORT_TEMPLATE_PRONET) {
-      const dedupedRows = deduplicateReportRowsByOrder(
-        filterRowsByOrderCreatedAt(rows as Array<{ created_at?: string | null }>) as Parameters<
-          typeof deduplicateReportRowsByOrder
-        >[0],
-      );
+      const dedupedRows = deduplicateReportRowsByOrder(filterRowsByOrderCreatedAt(rows));
       const pronetFromSupabase = dedupedRows.filter((row) => isPronetOrder(row));
 
       // Si Supabase ya tiene órdenes PRONET, no escanear miles de páginas en Orderry.
