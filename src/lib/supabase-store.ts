@@ -14,12 +14,18 @@ const BACKOFFICE_SHEET_CSV_URLS = (process.env.BACKOFFICE_SHEET_CSV_URLS || proc
   .filter(Boolean);
 const BACKOFFICE_SHEET_TIMEOUT_MS = Number(process.env.BACKOFFICE_SHEET_TIMEOUT_MS || '20000');
 
+/** Pestaña mixta (Xiaomi + Claro OPERADOR + retailer). No forzar cliente por gid. */
 const inferClientFromSheetUrl = (url: string): BackofficePrealertRow['client'] | null => {
   const gid = (url.match(/[?&]gid=(\d+)/i) || [])[1] || '';
-  if (gid === '394499655') return 'XIAOMI';
   if (gid === '1876689627') return 'RETAILER';
+  const claroUrl = String(process.env.BACKOFFICE_CLARO_SHEET_CSV_URL || '').trim();
+  if (claroUrl && url === claroUrl) return 'CLARO';
   return null;
 };
+
+const CLARO_CAC_PATTERN = /-[A-Z]{3}-\d{2,4}$/i;
+
+const isClaroCacName = (value: string): boolean => CLARO_CAC_PATTERN.test(value.trim());
 
 type TenantId = 'GT' | 'CR';
 
@@ -163,21 +169,43 @@ const rowsToObjects = (csvText: string) => {
   });
 };
 
-const inferBackofficeClient = (row: Record<string, any>) => {
-  const text = normalizeHeader([
-    headerValue(row, ['Marcas']),
+const inferBackofficeClient = (row: Record<string, any>): BackofficePrealertRow['client'] => {
+  const service = normalizeHeader(
     headerValue(row, ['Servicios Logistico / Pre Alerta', 'Servicios Logístico / Pre Alerta']),
-    headerValue(row, ['Tienda / CAC', 'Tienda/CAC']),
-    headerValue(row, ['Tipos de Productos', 'Tipos de Productos ']),
-  ].join(' '));
+  );
+  const cac = String(headerValue(row, ['Tienda / CAC', 'Tienda/CAC', 'Tienda', 'Agencia']) || '').trim();
+  const retailerCol = normalizeHeader(headerValue(row, ['RETAILER', 'DISTRIBUIDORES']));
 
-  if (text.includes('xiaomi')) return 'XIAOMI';
-  if (text.includes('claro')) return 'CLARO';
-  if (text.includes('retail') || text.includes('reteiler')) return 'RETAILER';
+  const blob = normalizeHeader(
+    [
+      headerValue(row, ['Marcas']),
+      service,
+      cac,
+      headerValue(row, ['Tipos de Productos', 'Tipos de Productos ']),
+      retailerCol,
+    ].join(' '),
+  );
 
-  const sheetText = normalizeHeader(headerValue(row, ['Servicios Logistico / Pre Alerta', 'Servicios Logístico / Pre Alerta']));
-  if (sheetText.includes('claro')) return 'CLARO';
-  if (sheetText.includes('xiaomi')) return 'XIAOMI';
+  if (blob.includes('claro') || blob.includes('operador') || blob.includes('distribuidor')) return 'CLARO';
+  if (retailerCol || blob.includes('retail') || blob.includes('reteiler')) return 'RETAILER';
+
+  // Pre-alertas canal Claro OPERADOR en la misma hoja de Google Sheets (Recolección en tienda + CAC Claro).
+  if (service.includes('recoleccion en tienda')) return 'CLARO';
+  if (service === 'guate' && isClaroCacName(cac)) return 'CLARO';
+  if (isClaroCacName(cac) && (service.includes('mensajeria') || service.includes('recoleccion'))) return 'CLARO';
+
+  if (
+    service.includes('agencia') ||
+    service.includes('maxd') ||
+    service.includes('punto naranja') ||
+    service.includes('distel') ||
+    service.includes('bright mobiles') ||
+    service.includes('cargo express')
+  ) {
+    return 'RETAILER';
+  }
+
+  if (blob.includes('xiaomi') && !service.includes('recoleccion')) return 'XIAOMI';
 
   return 'UNKNOWN';
 };
@@ -196,7 +224,8 @@ const parseBackofficeSheetRows = (
     const collectedAt = parseGoogleSheetDate(headerValue(row, ['Fecha', 'Fecha de Entrega', 'Fecha de Recoleccion', 'Fecha de Recolección']));
     const status = stringifySheetValue(headerValue(row, ['Estatus', 'Estado', 'Clasificación'])) || (collectedAt ? 'RECOLECTADO' : 'PENDIENTE');
     const inferredClient = inferBackofficeClient(row);
-    const client = inferredClient === 'UNKNOWN' && defaultClient ? defaultClient : inferredClient;
+    const client =
+      inferredClient !== 'UNKNOWN' ? inferredClient : defaultClient || 'UNKNOWN';
     const customer = stringifySheetValue(
       headerValue(row, ['Tienda / CAC', 'Tienda/CAC', 'Tienda', 'Agencia', 'RETAILER', 'DISTRIBUIDORES', 'Dirección'])
     ) || 'Sin agencia';
@@ -710,7 +739,11 @@ export const getBackofficePrealertRows = async (): Promise<BackofficePrealertRow
 };
 
 export const getBackofficePrealertRowsFromGoogleSheets = async (): Promise<BackofficePrealertRow[]> => {
-  const urls = BACKOFFICE_SHEET_CSV_URLS.length ? BACKOFFICE_SHEET_CSV_URLS : DEFAULT_BACKOFFICE_SHEET_CSV_URLS;
+  const claroOnlyUrl = String(process.env.BACKOFFICE_CLARO_SHEET_CSV_URL || '').trim();
+  const urls = [
+    ...(BACKOFFICE_SHEET_CSV_URLS.length ? BACKOFFICE_SHEET_CSV_URLS : DEFAULT_BACKOFFICE_SHEET_CSV_URLS),
+    ...(claroOnlyUrl ? [claroOnlyUrl] : []),
+  ];
   const results = await Promise.all(
     urls.map(async (url) => {
       const controller = new AbortController();
