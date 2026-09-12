@@ -1,7 +1,15 @@
 import { NextResponse } from 'next/server';
 import { OrderryWebhookSchema } from '@/schemas/orderry';
 import crypto from 'crypto';
-import { appendWebhookEvent, saveTechnicianMovement } from '@/lib/supabase-store';
+import {
+  appendWebhookEvent,
+  insertHistorialMovimiento,
+  saveTechnicianMovement,
+} from '@/lib/supabase-store';
+import {
+  resolveEstadoCatalogoBatch,
+  syncEstadosCatalogoFromOrderry,
+} from '@/lib/orderry-status-catalog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,6 +37,18 @@ const extractTenantFromOrderName = (orderName: string) => {
   if (orderName.includes('CR-')) return 'CR';
   return 'UNKNOWN';
 };
+
+/** GET = verificación en navegador. Orderry envía POST con el evento. */
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    endpoint: '/api/webhooks',
+    methods: ['GET', 'POST'],
+    message:
+      'Webhook activo. Orderry debe usar POST con evento Order.Status.Changed. ' +
+      'Un 405 en GET antiguo era normal si solo existía POST; este GET confirma que la ruta existe.',
+  });
+}
 
 export async function POST(req: Request) {
   try {
@@ -71,6 +91,60 @@ export async function POST(req: Request) {
       raw_payload: payload,
     });
 
+    let historialRecorded = false;
+
+    if (/order\.status\.changed/i.test(result.data.event_name)) {
+      const statusIds = [metadata.old?.id, metadata.new.id].filter(
+        (id): id is number => typeof id === 'number' && id > 0,
+      );
+      let catalog = await resolveEstadoCatalogoBatch(statusIds);
+
+      if (statusIds.some((id) => !catalog.has(id))) {
+        console.warn(
+          `[historial_movimientos] status_id sin catálogo (${statusIds.join(', ')}). Ejecuta sync-orderry-statuses.`,
+        );
+        try {
+          await syncEstadosCatalogoFromOrderry();
+          catalog = await resolveEstadoCatalogoBatch(statusIds);
+        } catch (syncErr) {
+          console.warn('[historial_movimientos] Auto-sync de estados falló:', syncErr);
+        }
+      }
+
+      const oldResolved = metadata.old?.id ? catalog.get(metadata.old.id) : null;
+      const newResolved = catalog.get(metadata.new.id);
+
+      if (!newResolved) {
+        console.error(
+          `[historial_movimientos] status_id ${metadata.new.id} sin nombre en estados_catalogo. ` +
+            'Corra npm run orderry:sync-statuses.',
+        );
+      }
+
+      try {
+        await insertHistorialMovimiento({
+          orden_id: String(metadata.order.id),
+          fecha_hora_cambio: result.data.created_at,
+          estado_anterior: oldResolved?.estado ?? null,
+          estado_nuevo: newResolved?.estado ?? null,
+          grupo_nuevo: newResolved?.grupo ?? null,
+          status_id_anterior: metadata.old?.id ?? null,
+          status_id_nuevo: metadata.new.id,
+          origen: 'webhook',
+          usuario: result.data.employee?.full_name ?? null,
+          payload_crudo: payload as Record<string, unknown>,
+        });
+        historialRecorded = true;
+        console.log(
+          `[historial_movimientos] OK orden ${metadata.order.id}: ` +
+            `${oldResolved?.estado ?? '—'} → ${newResolved?.estado ?? metadata.new.id}`,
+        );
+      } catch (historialError) {
+        const msg = historialError instanceof Error ? historialError.message : String(historialError);
+        console.error(`[historial_movimientos] FALLO orden ${metadata.order.id}:`, msg);
+      }
+    }
+
     const movementTypeMap: Record<number, string> = {
       1: 'ASSIGNED',
       2: 'IN_PROGRESS',
@@ -108,6 +182,7 @@ export async function POST(req: Request) {
         order_id: metadata.order.id,
         transition: `${metadata.old?.id} to ${metadata.new.id}`,
         movement_recorded: movementType,
+        historial_recorded: historialRecorded,
       }
     }, { status: 200 });
 

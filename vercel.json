@@ -4,6 +4,14 @@
     {
       "path": "/api/isp/daily-sync",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/sync-orderry-statuses",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/sync-orderry-orders",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

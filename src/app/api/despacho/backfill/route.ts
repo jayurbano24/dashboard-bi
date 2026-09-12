@@ -92,14 +92,29 @@ export async function GET(request: Request) {
     const missingRows = rows.filter((row) => {
       const payload = row.payload || {};
       
-      // Si ya fue procesado correctamente por el backfill v2, lo ignoramos para no crear un bucle infinito
-      if (payload.backfilled_v2) return false;
+      const hasColor = Boolean(payload.color || payload.COLOR);
+      const hasInCourier = Boolean(payload.inCourier || payload['IN COURIER']);
+      const hasFolio = Boolean(payload.folioPdv || payload['FOLIO PDV']);
+      const hasPop = Boolean(payload.fechaFacturacion || payload['FECHA DE VENTA -POP']);
+
+      if (payload.backfilled_v2 && hasColor && hasInCourier && hasFolio && hasPop && payload.hasOwnProperty('done_at')) {
+        return false;
+      }
 
       const missingCreatedAt = !payload.created_at;
       const missingOrderName = !row.order_name && !payload.order_name && !payload.ordenNumero;
       const missingModeloSap = !payload.hasOwnProperty('modeloSap');
       const missingDoneAt = !payload.hasOwnProperty('done_at');
-      const missingFields = !payload.hasOwnProperty('cliente') || !payload.hasOwnProperty('falla') || !payload.hasOwnProperty('fechaFacturacion') || !payload.hasOwnProperty('tecnico') || !payload.hasOwnProperty('serviciosObras') || (!row.order_name && payload.ordenNumero);
+      const missingFields =
+        !payload.hasOwnProperty('cliente') ||
+        !payload.hasOwnProperty('falla') ||
+        !payload.hasOwnProperty('fechaFacturacion') ||
+        !payload.hasOwnProperty('folioPdv') ||
+        !payload.hasOwnProperty('color') ||
+        !payload.hasOwnProperty('inCourier') ||
+        !payload.hasOwnProperty('tecnico') ||
+        !payload.hasOwnProperty('serviciosObras') ||
+        (!row.order_name && payload.ordenNumero);
       
       return !!row.order_id && (missingCreatedAt || missingOrderName || missingModeloSap || missingDoneAt || missingFields);
     });
@@ -108,7 +123,13 @@ export async function GET(request: Request) {
     const limitedMissingRows = missingRows.slice(0, 50);
 
     if (limitedMissingRows.length === 0) {
-      return NextResponse.json({ ok: true, message: 'Todo está al día. No hay filas pendientes de actualizar.', updated: 0 });
+      return NextResponse.json({
+        ok: true,
+        message: 'Todo está al día. No hay filas pendientes de actualizar.',
+        updated: 0,
+        pending: 0,
+        total: rows.length,
+      });
     }
 
     let updatedCount = 0;
@@ -244,6 +265,8 @@ export async function GET(request: Request) {
             const falla = String(match?.malfunction || getCustomField(cf, 'Mal funcionamiento *', 'Mal funcionamiento', 'mal funcionamiento', 'Mal Funcionamiento', 'Falla', 'falla') || match?.description || '').trim();
             const folioPdv = getCustomField(cf, 'FOLIO PDV *', 'FOLIO PDV') || '';
             const fechaFacturacion = getCustomField(cf, 'FECHA DE VENTA -POP *', 'FECHA DE VENTA -POP', 'FECHA DE VENTA POP *', 'FECHA DE VENTA POP') || '';
+            const color = getCustomField(cf, 'COLOR', 'color', 'Color') || String(match?.asset?.color || '').trim();
+            const inCourier = getCustomField(cf, 'IN COURIER') || '';
             const garantia = getCustomField(cf, 'GARANTIA', 'garantia') || 'SI';
             const tipoOrden = (match?.order_type as any)?.name ?? '';
 
@@ -326,6 +349,12 @@ export async function GET(request: Request) {
               tipoOrden,
               folioPdv,
               fechaFacturacion,
+              color: color || payload.color,
+              inCourier: inCourier || payload.inCourier,
+              'FOLIO PDV': folioPdv,
+              'FECHA DE VENTA -POP': fechaFacturacion,
+              COLOR: color,
+              'IN COURIER': inCourier,
               created_at: match?.created_at ?? payload.created_at,
               closed_at,
               done_at,
@@ -357,11 +386,15 @@ export async function GET(request: Request) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
+    const pending = Math.max(0, missingRows.length - limitedMissingRows.length);
     return NextResponse.json({
       ok: true,
-      message: `Proceso completado. Se actualizaron ${updatedCount} filas de histórico. Quedan ${missingRows.length - limitedMissingRows.length} pendientes.`,
+      message: pending > 0
+        ? `Lote completado: ${updatedCount} filas. Quedan ${pending} pendientes.`
+        : `Sincronización completa: ${updatedCount} filas en este lote.`,
       updated: updatedCount,
-      pending: missingRows.length - limitedMissingRows.length,
+      pending,
+      total: rows.length,
       errors: errors.slice(0, 50),
       hasMoreErrors: errors.length > 50,
     });

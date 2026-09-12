@@ -3,6 +3,25 @@ import { ClaroReportRow } from '../shared/types';
 import { ReportTemplateEngine } from '../domain/ReportTemplateEngine';
 
 export class ExcelExporter {
+  public exportRowsToBuffer<T extends Record<string, unknown>>(
+    rows: T[],
+    columns: string[],
+    sheetName = 'ORIGINAL',
+  ): Buffer {
+    const data = rows.map((row) => {
+      const orderedRow: Record<string, unknown> = {};
+      for (const col of columns) {
+        orderedRow[col] = row[col] ?? '';
+      }
+      return orderedRow;
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(data, { header: columns });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  }
+
   public exportToBuffer(rows: ClaroReportRow[]): Buffer {
     const columns = ReportTemplateEngine.getColumns();
     
@@ -15,11 +34,7 @@ export class ExcelExporter {
       return orderedRow;
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(data, { header: columns as string[] });
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'ORIGINAL'); // La hoja oficial solicitada
-
-    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    return this.exportRowsToBuffer(data, columns as string[], 'ORIGINAL');
   }
 
   public exportToCsvString(rows: ClaroReportRow[]): string {

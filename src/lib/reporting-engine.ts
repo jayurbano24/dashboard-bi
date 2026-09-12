@@ -382,27 +382,30 @@ export class ReportingEngine {
     });
   }
 
+  filterByRegion<T extends UnifiedReportRow>(
+    rows: T[],
+    regionFilter: 'TODOS' | 'GAM' | 'NO GAM' = 'TODOS',
+  ): T[] {
+    if (regionFilter === 'TODOS') return [...rows];
+
+    return rows.filter((row) => {
+      const canalIngreso = String(row.origen || row.dealer || row.sucursal || '').trim().toUpperCase();
+      const prefixMatch = canalIngreso.match(/^([A-Za-z0-9]+)/);
+      const prefix = prefixMatch ? prefixMatch[1] : '';
+
+      const dept = (this.agencyDirectory[prefix] || '').trim().toLowerCase();
+      const isGam = dept === 'guatemala';
+
+      return regionFilter === 'GAM' ? isGam : !isGam;
+    });
+  }
+
   process(
     rows: UnifiedReportRow[],
     strategyName: string,
     regionFilter: 'TODOS' | 'GAM' | 'NO GAM' = 'TODOS'
   ): Record<string, any>[] {
-    // 1. Filtrar geográficamente
-    let filteredRows = [...rows];
-    if (regionFilter !== 'TODOS') {
-      filteredRows = rows.filter((row) => {
-        const canalIngreso = String(row.origen || row.dealer || row.sucursal || '').trim().toUpperCase();
-        const prefixMatch = canalIngreso.match(/^([A-Za-z0-9]+)/);
-        const prefix = prefixMatch ? prefixMatch[1] : '';
-        
-        const dept = (this.agencyDirectory[prefix] || '').trim().toLowerCase();
-        const isGam = dept === 'guatemala';
-
-        return regionFilter === 'GAM' ? isGam : !isGam;
-      });
-    }
-
-    // 2. Ejecutar la estrategia
+    const filteredRows = this.filterByRegion(rows, regionFilter);
     const strategy = ReportFactory.getStrategy(strategyName);
     return strategy.transform(filteredRows, this.agencyDirectory);
   }

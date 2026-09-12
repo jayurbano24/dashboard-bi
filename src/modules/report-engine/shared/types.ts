@@ -50,6 +50,9 @@ export interface ClaroReportRow {
   'Fecha reparación CSA': string;
   'Fecha Envío CAC': string;
   'Fecha entrega CAC': string;
+  'Fecha Grupo Ganado': string;
+  'Fecha Devolver': string;
+  'Origen de fechas': string;
   'SLA': number | string;
   'GAM / NO GAM': string;
   'Folio': string;

@@ -20,6 +20,7 @@ import {
   Smartphone,
   Filter,
   ArrowLeft,
+  RefreshCw,
 } from 'lucide-react';
 
 // ─── CATÁLOGOS ────────────────────────────────────────────────────────────────
@@ -229,24 +230,151 @@ export default function DespachoPagina() {
   const [authAllowed, setAuthAllowed] = useState(false);
   const [showApiSettings, setShowApiSettings] = useState(false);
   const [syncingAgencies, setSyncingAgencies] = useState(false);
+  const [syncingOrderryFields, setSyncingOrderryFields] = useState(false);
+  const [syncingHistorialBackfill, setSyncingHistorialBackfill] = useState(false);
+  const [historialBackfillProgress, setHistorialBackfillProgress] = useState<{
+    inserted: number;
+    pending: number | null;
+    batch: number;
+  } | null>(null);
+  const [orderrySyncProgress, setOrderrySyncProgress] = useState<{
+    updated: number;
+    pending: number | null;
+    batch: number;
+  } | null>(null);
 
   const handleSyncAgencies = async () => {
     setSyncingAgencies(true);
     try {
-      showNotification('Iniciando sincronización profunda (Backfill)...', 'info');
-      const res = await fetch('/api/despacho/backfill', { method: 'GET' });
+      const res = await fetch('/api/despacho/sync-agencies', { method: 'POST', cache: 'no-store' });
       const data = await res.json();
-      if (data.ok) showNotification(`✅ Backfill completo. ${data.updated} registros actualizados en Supabase.`);
-      else showNotification(`⚠️ Backfill finalizado con errores o advertencias.`, 'error');
-      
-      // Reload report data to reflect the changes immediately
+      if (data.ok) {
+        showNotification(`✅ ${data.synced ?? 0} agencias sincronizadas en Supabase.`);
+      } else {
+        showNotification(data.error || 'Error al sincronizar agencias.', 'error');
+      }
+    } catch {
+      showNotification('Error al conectar con sync-agencies.', 'error');
+    } finally {
+      setSyncingAgencies(false);
+    }
+  };
+
+  const handleHistorialBackfill = async () => {
+    if (syncingHistorialBackfill) return;
+    setSyncingHistorialBackfill(true);
+    setHistorialBackfillProgress({ inserted: 0, pending: null, batch: 0 });
+
+    let totalInserted = 0;
+    let batch = 0;
+    const maxBatches = 50;
+
+    try {
+      showNotification(
+        'Registrando estado actual en historial (1 fecha por orden). Las demás fechas se llenan con el webhook.',
+        'info',
+      );
+
+      while (batch < maxBatches) {
+        batch += 1;
+        const res = await fetch('/api/despacho/historial-backfill', { cache: 'no-store' });
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          showNotification(data.error || 'Error en backfill de historial.', 'error');
+          break;
+        }
+
+        totalInserted += Number(data.inserted ?? 0);
+        const pending = typeof data.pending === 'number' ? data.pending : 0;
+        setHistorialBackfillProgress({ inserted: totalInserted, pending, batch });
+
+        if (pending === 0) {
+          showNotification(
+            totalInserted > 0
+              ? `✅ Historial actualizado: ${totalInserted} órdenes registradas.`
+              : '✅ Todas las órdenes ya tienen fecha de estado actual en historial.',
+          );
+          break;
+        }
+
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
+      if (batch >= maxBatches) {
+        showNotification(
+          `Lote máximo alcanzado (${totalInserted} órdenes). Pulse de nuevo para continuar.`,
+          'error',
+        );
+      }
+
       if (activeTab === 'reporte') {
         loadReport();
       }
-    } catch (err) {
-      showNotification('⚠️ Error al conectar con el API de Backfill.', 'error');
+    } catch {
+      showNotification('Error de red al registrar historial de estados.', 'error');
     } finally {
-      setSyncingAgencies(false);
+      setSyncingHistorialBackfill(false);
+    }
+  };
+
+  const handleSyncOrderryFields = async () => {
+    if (syncingOrderryFields) return;
+    setSyncingOrderryFields(true);
+    setOrderrySyncProgress({ updated: 0, pending: null, batch: 0 });
+
+    let totalUpdated = 0;
+    let batch = 0;
+    const maxBatches = 60;
+
+    try {
+      showNotification('Sincronizando campos desde Orderry (POP, Color, PDV, fechas…)…', 'info');
+
+      while (batch < maxBatches) {
+        batch += 1;
+        const res = await fetch('/api/despacho/backfill', { cache: 'no-store' });
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          showNotification(data.error || 'Error en sincronización Orderry.', 'error');
+          break;
+        }
+
+        totalUpdated += Number(data.updated ?? 0);
+        const pending = typeof data.pending === 'number' ? data.pending : 0;
+        setOrderrySyncProgress({ updated: totalUpdated, pending, batch });
+
+        if (pending === 0 && (data.updated ?? 0) === 0) {
+          showNotification(
+            totalUpdated > 0
+              ? `✅ Sincronización completa: ${totalUpdated} filas actualizadas desde Orderry.`
+              : '✅ Todos los campos ya están sincronizados con Orderry.',
+          );
+          break;
+        }
+
+        if (pending === 0) {
+          showNotification(`✅ Sincronización completa: ${totalUpdated} filas actualizadas desde Orderry.`);
+          break;
+        }
+
+        await new Promise((r) => setTimeout(r, 400));
+      }
+
+      if (batch >= maxBatches) {
+        showNotification(
+          `Lote máximo alcanzado (${totalUpdated} filas). Ejecute de nuevo para continuar.`,
+          'error',
+        );
+      }
+
+      if (activeTab === 'reporte') {
+        loadReport();
+      }
+    } catch {
+      showNotification('Error de red al sincronizar campos desde Orderry.', 'error');
+    } finally {
+      setSyncingOrderryFields(false);
     }
   };
 
@@ -269,6 +397,7 @@ export default function DespachoPagina() {
   const [reportTemplate, setReportTemplate] = useState('TCW_MASTER');
   const [reportRegion, setReportRegion] = useState<'TODOS' | 'GAM' | 'NO GAM'>('TODOS');
   const [reportRows, setReportRows] = useState<any[]>([]);
+  const [reportHint, setReportHint] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
   const [reportPage, setReportPage] = useState(1);
   const reportPageSize = 25;
@@ -405,8 +534,13 @@ export default function DespachoPagina() {
       const data = await res.json();
       if (data.ok && Array.isArray(data.rows)) {
         setReportRows(data.rows);
+        setReportHint(typeof data.hint === 'string' ? data.hint : '');
         setReportPage(1);
+        if (data.rows.length === 0 && data.hint) {
+          showNotification(String(data.hint), 'error');
+        }
       } else {
+        setReportHint('');
         showNotification(data.error || 'Error al cargar reporte.', 'error');
       }
     } catch (err: any) {
@@ -644,6 +778,16 @@ export default function DespachoPagina() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  // Recargar al cambiar plantilla (evita vista previa con columnas de otra plantilla)
+  const reportTemplateRef = useRef(reportTemplate);
+  useEffect(() => {
+    if (activeTab !== 'reporte') return;
+    if (reportTemplateRef.current === reportTemplate) return;
+    reportTemplateRef.current = reportTemplate;
+    loadReport();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportTemplate, activeTab]);
 
 
   // Persistencia (solo después del primer mount para no borrar con el estado inicial vacío)
@@ -1670,9 +1814,45 @@ export default function DespachoPagina() {
         {/* ══════════════ TAB REPORTE (MOTOR DE REPORTE) ══════════════ */}
         {activeTab === 'reporte' && (
           <div className="bg-white rounded-xl border border-slate-300 shadow-lg overflow-hidden space-y-6 p-6">
-            <div className="border-b border-slate-200 pb-4">
-              <h2 className="text-lg font-bold text-[#001e6c] flex items-center"><Printer className="w-5 h-5 mr-2 text-amber-500 animate-pulse" />Motor de Reporte de Despachos</h2>
-              <p className="text-xs text-slate-500">Consulte y extraiga reportes de todas las unidades despachadas en Supabase.</p>
+            <div className="border-b border-slate-200 pb-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-[#001e6c] flex items-center"><Printer className="w-5 h-5 mr-2 text-amber-500 animate-pulse" />Motor de Reporte de Despachos</h2>
+                <p className="text-xs text-slate-500">Consulte y extraiga reportes de todas las unidades despachadas en Supabase.</p>
+              </div>
+              <div className="flex flex-col items-stretch sm:items-end gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleSyncOrderryFields}
+                  disabled={syncingOrderryFields || syncingHistorialBackfill}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-violet-700 hover:bg-violet-600 disabled:opacity-60 text-white text-xs font-bold rounded-lg transition"
+                  title="Trae de Orderry: POP, Color, PDV, IN Courier, Completado en, Cerrado, etc."
+                >
+                  <RefreshCw className={`w-4 h-4 ${syncingOrderryFields ? 'animate-spin' : ''}`} />
+                  {syncingOrderryFields ? 'Sincronizando Orderry…' : 'Sincronizar campos desde Orderry'}
+                </button>
+                {orderrySyncProgress && syncingOrderryFields && (
+                  <span className="text-[10px] text-violet-700 font-mono">
+                    Lote {orderrySyncProgress.batch} · {orderrySyncProgress.updated} actualizadas
+                    {orderrySyncProgress.pending != null ? ` · ${orderrySyncProgress.pending} pendientes` : ''}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={handleHistorialBackfill}
+                  disabled={syncingHistorialBackfill || syncingOrderryFields}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-amber-700 hover:bg-amber-600 disabled:opacity-60 text-white text-xs font-bold rounded-lg transition"
+                  title="Lote rápido (25 órdenes). Backfill completo ya hecho vía CLI: orderry:backfill-historial:apply"
+                >
+                  <RefreshCw className={`w-4 h-4 ${syncingHistorialBackfill ? 'animate-spin' : ''}`} />
+                  {syncingHistorialBackfill ? 'Registrando fechas…' : 'Backfill fechas (lote API)'}
+                </button>
+                {historialBackfillProgress && syncingHistorialBackfill && (
+                  <span className="text-[10px] text-amber-800 font-mono">
+                    Lote {historialBackfillProgress.batch} · {historialBackfillProgress.inserted} registradas
+                    {historialBackfillProgress.pending != null ? ` · ${historialBackfillProgress.pending} pendientes` : ''}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* FILTROS FILA 1 */}
@@ -1711,6 +1891,9 @@ export default function DespachoPagina() {
                 <select value={reportTemplate} onChange={(e) => setReportTemplate(e.target.value)} className="w-full p-2 bg-white border border-slate-300 rounded focus:outline-none">
                   <option value="TCW_MASTER">TCW Master (Interno)</option>
                   <option value="PLANTILLA_CLARO_MENSUAL">Claro Mensual (Plantilla)</option>
+                  <option value="PLANTILLA_SERVITOTAL">Servitotal (Plantilla)</option>
+                  <option value="PLANTILLA_PRONET">Pronet (Plantilla)</option>
+                  <option value="HISTORIAL_MOVIMIENTOS_ESTADO">Historial de Movimientos por Estado</option>
                 </select>
               </div>
               <div>
@@ -1737,12 +1920,79 @@ export default function DespachoPagina() {
 
             {/* TABLA DE RESULTADOS */}
             {reportLoading ? (
-              <div className="p-12 text-center text-slate-500 animate-pulse">Generando reporte de la base de datos...</div>
+              <div className="p-12 text-center text-slate-500 animate-pulse">
+                {reportTemplate === 'PLANTILLA_PRONET'
+                  ? 'Generando reporte PRONET (Supabase + enriquecimiento Orderry)...'
+                  : reportTemplate === 'PLANTILLA_SERVITOTAL'
+                    ? 'Generando reporte Servitotal...'
+                    : 'Generando reporte de la base de datos...'}
+              </div>
             ) : reportRows.length === 0 ? (
-              <div className="p-12 text-center text-slate-400 border border-dashed rounded bg-slate-50">No se encontraron registros de despachos con los filtros seleccionados.</div>
+              <div className="p-12 text-center text-slate-400 border border-dashed rounded bg-slate-50 space-y-2">
+                <p>
+                  {reportTemplate === 'PLANTILLA_PRONET' || reportTemplate === 'PLANTILLA_SERVITOTAL'
+                    ? 'No se encontraron órdenes para esta plantilla con los filtros seleccionados.'
+                    : 'No se encontraron registros de despachos con los filtros seleccionados.'}
+                </p>
+                {reportHint ? (
+                  <p className="text-xs text-amber-700 max-w-2xl mx-auto">{reportHint}</p>
+                ) : reportTemplate === 'PLANTILLA_PRONET' ? (
+                  <p className="text-xs text-slate-500 max-w-2xl mx-auto">
+                    El reporte PRONET filtra órdenes con <strong>CANAL DE INGRESO = FUNDACION GENESIS</strong> en Orderry
+                    (también consulta Supabase). Pruebe sin filtro de fechas si el rango actual excluye las órdenes.
+                  </p>
+                ) : null}
+              </div>
             ) : (
               <div className="overflow-x-auto border border-slate-200 rounded-lg shadow-inner">
-                {reportTemplate === 'PLANTILLA_CLARO_MENSUAL' ? (
+                {reportTemplate === 'HISTORIAL_MOVIMIENTOS_ESTADO' ? (
+                  <>
+                  <p className="text-[10px] text-slate-500 px-2 py-1 bg-slate-50 border-b">
+                    Vista previa parcial. <strong>Exportar Excel</strong> incluye 42 columnas de fecha por estado.
+                    Solo se llena <strong>Fecha Orden Creada</strong> y la columna del <strong>estado actual</strong>;
+                    el resto requiere webhook (<code className="text-[9px]">Order.Status.Changed</code>).
+                    Al cambiar plantilla se recarga automáticamente; use <strong>Buscar</strong> si ajusta filtros.
+                  </p>
+                  <table className="w-full text-left border-collapse text-[11px] whitespace-nowrap">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-600 font-bold border-b">
+                        <th className="p-3 border">Orden #</th>
+                        <th className="p-3 border">Estado actual</th>
+                        <th className="p-3 border">Nota historial</th>
+                        <th className="p-3 border">Cliente</th>
+                        <th className="p-3 border">Grupo dispositivo</th>
+                        <th className="p-3 border">Marca</th>
+                        <th className="p-3 border">Modelo</th>
+                        <th className="p-3 border">IMEI</th>
+                        <th className="p-3 border">Fecha Orden Creada</th>
+                        <th className="p-3 border">Fecha En Diagnóstico</th>
+                        <th className="p-3 border">Fecha En Reparación</th>
+                        <th className="p-3 border">Fecha Para Devolución</th>
+                        <th className="p-3 border">Fecha Entregado</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {reportRows.slice((reportPage - 1) * reportPageSize, reportPage * reportPageSize).map((r, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50 border-b">
+                          <td className="p-3 border font-bold font-mono text-[#001e6c]">{r['Orden #'] || '—'}</td>
+                          <td className="p-3 border">{r['Estado actual'] || '—'}</td>
+                          <td className="p-3 border max-w-[200px] truncate text-[10px] text-slate-600" title={r['Nota historial']}>{r['Nota historial'] || '—'}</td>
+                          <td className="p-3 border">{r['Nombre del cliente'] || '—'}</td>
+                          <td className="p-3 border">{r['Grupo de dispositivo'] || '—'}</td>
+                          <td className="p-3 border">{r['Marca'] || '—'}</td>
+                          <td className="p-3 border">{r['Modelo'] || '—'}</td>
+                          <td className="p-3 border font-mono">{r['IMEI'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha Orden Creada'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha En Diagnóstico'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha En Reparación'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha Para Devolución'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha Entregado'] || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  </>
+                ) : reportTemplate === 'PLANTILLA_CLARO_MENSUAL' ? (
                   <table className="w-full text-left border-collapse text-[11px] whitespace-nowrap">
                     <thead>
                       <tr className="bg-slate-100 text-slate-600 font-bold border-b">
@@ -1760,6 +2010,8 @@ export default function DespachoPagina() {
                         <th className="p-3 border">Reparación CSA</th>
                         <th className="p-3 border">Envío CAC</th>
                         <th className="p-3 border">Entrega CAC</th>
+                        <th className="p-3 border">Grupo Ganado</th>
+                        <th className="p-3 border">Devolver</th>
                         <th className="p-3 border">Cliente</th>
                         <th className="p-3 border">Teléfono</th>
                         <th className="p-3 border">Marca</th>
@@ -1772,6 +2024,7 @@ export default function DespachoPagina() {
                         <th className="p-3 border">Técnico</th>
                         <th className="p-3 border">No. Guía envío CAC</th>
                         <th className="p-3 border">Justificación tiempo</th>
+                        <th className="p-3 border">Estado SLA</th>
                         <th className="p-3 border">Diferencia SLA</th>
                       </tr>
                     </thead>
@@ -1802,6 +2055,8 @@ export default function DespachoPagina() {
                           <td className="p-3 border font-mono text-[10px]">{r['Fecha reparación CSA'] || '—'}</td>
                           <td className="p-3 border font-mono text-[10px]">{r['Fecha Envío CAC'] || '—'}</td>
                           <td className="p-3 border font-mono text-[10px]">{r['Fecha entrega CAC'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha Grupo Ganado'] || '—'}</td>
+                          <td className="p-3 border font-mono text-[10px]">{r['Fecha Devolver'] || '—'}</td>
                           <td className="p-3 border">{r['Cliente'] || '—'}</td>
                           <td className="p-3 border font-mono">{r['Teléfono'] || '—'}</td>
                           <td className="p-3 border">{r['Marca'] || '—'}</td>
@@ -1814,11 +2069,113 @@ export default function DespachoPagina() {
                           <td className="p-3 border">{r['Usuario o Técnico'] || '—'}</td>
                           <td className="p-3 border font-mono">{r['No Guía envío CAC'] || '—'}</td>
                           <td className="p-3 border max-w-xs truncate" title={r['Justificación fuera SLA']}>{r['Justificación fuera SLA'] || '—'}</td>
+                          <td className="p-3 border text-center">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              r['Estado SLA'] === 'Dentro SLA' ? 'bg-emerald-100 text-emerald-800' :
+                              r['Estado SLA'] === 'Fuera SLA' ? 'bg-rose-100 text-rose-800' :
+                              r['Estado SLA'] === 'En curso' ? 'bg-sky-100 text-sky-800' :
+                              'bg-slate-100 text-slate-600'
+                            }`}>{r['Estado SLA'] || '—'}</span>
+                          </td>
                           <td className="p-3 border text-center font-bold font-mono text-slate-600">{r['Diferencia SLA'] || '—'}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                ) : reportTemplate === 'PLANTILLA_SERVITOTAL' ? (
+                  <table className="w-full text-left border-collapse text-[11px] whitespace-nowrap">
+                    <thead>
+                      <tr className="bg-[#001e6c] text-white font-bold border-b">
+                        <th className="p-3 border">FECHA INGRESO</th>
+                        <th className="p-3 border">ORDEN</th>
+                        <th className="p-3 border">ESTADO</th>
+                        <th className="p-3 border">CLIENTE</th>
+                        <th className="p-3 border">PRODUCTO</th>
+                        <th className="p-3 border">MARCA</th>
+                        <th className="p-3 border">MODELO</th>
+                        <th className="p-3 border">FOLIO</th>
+                        <th className="p-3 border">Fecha para Devolver</th>
+                        <th className="p-3 border">ENTREGADO</th>
+                        <th className="p-3 border">REPARACION</th>
+                        <th className="p-3 border">MAL FUNCIONAMIENTO</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {reportRows.slice((reportPage - 1) * reportPageSize, reportPage * reportPageSize).map((r, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50 border-b">
+                          <td className="p-3 border font-mono">{r['FECHA INGRESO'] || '—'}</td>
+                          <td className="p-3 border font-bold font-mono text-[#001e6c]">{r['ORDEN'] || '—'}</td>
+                          <td className="p-3 border">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
+                              {r['ESTADO'] || '—'}
+                            </span>
+                          </td>
+                          <td className="p-3 border font-semibold">{r['CLIENTE'] || '—'}</td>
+                          <td className="p-3 border">{r['PRODUCTO'] || '—'}</td>
+                          <td className="p-3 border">{r['MARCA'] || '—'}</td>
+                          <td className="p-3 border font-mono">{r['MODELO'] || '—'}</td>
+                          <td className="p-3 border font-mono">{r['FOLIO'] || '—'}</td>
+                          <td className="p-3 border font-mono">{r['Fecha para Devolver'] || '—'}</td>
+                          <td className="p-3 border font-mono">{r['ENTREGADO'] || '—'}</td>
+                          <td className="p-3 border max-w-xs truncate" title={r['REPARACION']}>{r['REPARACION'] || '—'}</td>
+                          <td className="p-3 border max-w-xs truncate" title={r['MAL FUNCIONAMIENTO']}>{r['MAL FUNCIONAMIENTO'] || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : reportTemplate === 'PLANTILLA_PRONET' ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-[10px] whitespace-nowrap min-w-[1800px]">
+                      <thead>
+                        <tr className="bg-[#001e6c] text-white font-bold border-b">
+                          <th className="p-2 border">Fecha de Ingreso</th>
+                          <th className="p-2 border">Orden de servicio</th>
+                          <th className="p-2 border">Numero de Guia</th>
+                          <th className="p-2 border">IMEI</th>
+                          <th className="p-2 border">Marca</th>
+                          <th className="p-2 border">Modelo</th>
+                          <th className="p-2 border">DNI</th>
+                          <th className="p-2 border">Nombre del Cliente</th>
+                          <th className="p-2 border">Población</th>
+                          <th className="p-2 border">Sucursal</th>
+                          <th className="p-2 border">Garantia Si/No</th>
+                          <th className="p-2 border">Diagnostico</th>
+                          <th className="p-2 border">Ingreso</th>
+                          <th className="p-2 border">REPARACION</th>
+                          <th className="p-2 border">Nuevo IMEI</th>
+                          <th className="p-2 border">ESTATUS</th>
+                          <th className="p-2 border">Teléfono del cliente</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {reportRows.slice((reportPage - 1) * reportPageSize, reportPage * reportPageSize).map((r, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50 border-b">
+                            <td className="p-2 border font-mono">{r['Fecha de Ingreso'] || '—'}</td>
+                            <td className="p-2 border font-bold font-mono text-[#001e6c]">{r['Orden de servicio'] || '—'}</td>
+                            <td className="p-2 border font-mono">{r['Numero de Guia'] || '—'}</td>
+                            <td className="p-2 border font-mono">{r['IMEI'] || '—'}</td>
+                            <td className="p-2 border">{r['Marca'] || '—'}</td>
+                            <td className="p-2 border font-mono">{r['Modelo'] || '—'}</td>
+                            <td className="p-2 border font-mono">{r['DNI'] || '—'}</td>
+                            <td className="p-2 border font-semibold max-w-[140px] truncate" title={r['Nombre del Cliente']}>{r['Nombre del Cliente'] || '—'}</td>
+                            <td className="p-2 border max-w-[140px] truncate" title={r['Población']}>{r['Población'] || '—'}</td>
+                            <td className="p-2 border">{r['Sucursal'] || '—'}</td>
+                            <td className="p-2 border text-center">{r['Garantia Si/No'] || '—'}</td>
+                            <td className="p-2 border max-w-[140px] truncate" title={r['Diagnostico']}>{r['Diagnostico'] || '—'}</td>
+                            <td className="p-2 border">{r['Ingreso'] || '—'}</td>
+                            <td className="p-2 border max-w-[160px] truncate" title={r['REPARACION']}>{r['REPARACION'] || '—'}</td>
+                            <td className="p-2 border font-mono">{r['Nuevo IMEI'] || '—'}</td>
+                            <td className="p-2 border">
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-100 text-amber-800">
+                                {r['ESTATUS'] || '—'}
+                              </span>
+                            </td>
+                            <td className="p-2 border font-mono">{r['Teléfono del cliente'] || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 ) : (
                   <table className="w-full text-left border-collapse text-[11px] whitespace-nowrap">
                     <thead>

@@ -252,12 +252,14 @@ export type TechnicianMovementInput = {
   duration_minutes?: number | null;
 };
 
-const getSupabaseAdmin = () => {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+export const getSupabaseAdmin = () => {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
     throw new Error('Faltan NEXT_PUBLIC_SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en .env.local');
   }
 
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  return createClient(url, key, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 };
@@ -824,11 +826,15 @@ export const getDespachoReportRows = async (filters?: {
     marca: String(row.marca || ''),
     modelo: String(row.modelo || ''),
     grupo: String(row.grupo || ''),
-    estado: String(row.estado || ''),
+    estado: String(row.status_live || row.estado || ''),
+    status_live: String(row.status_live || row.estado || ''),
+    status_id: row.status_id != null ? Number(row.status_id) : null,
     despachadoPor: String(row.payload?.despachadoPor || ''),
-    created_at: row.payload?.created_at || row.created_at || null,
-    closed_at: row.payload?.closed_at || null,
-    done_at: row.payload?.done_at || null,
+    created_at: row.created_at || row.payload?.created_at || null,
+    closed_at: row.closed_at || row.payload?.closed_at || null,
+    done_at: row.done_at || row.payload?.done_at || null,
+    modified_at: row.modified_at || row.payload?.modified_at || null,
+    color_live: row.color || row.payload?.color || row.payload?.COLOR || '',
     fecha_reparacion: row.payload?.done_at || null,
     completado_en: row.fecha || null,
     fecha_entrega: row.fecha || null,
@@ -848,6 +854,7 @@ export const getDespachoReportRows = async (filters?: {
     garantia: row.payload?.garantia || '',
     tipo_orden: row.payload?.tipoOrden || '',
     folioPdv: row.payload?.['FOLIO PDV'] || row.payload?.folioPdv || '',
+    inCourier: row.payload?.inCourier || row.payload?.['IN COURIER'] || '',
     fechaFacturacion: row.payload?.['FECHA DE VENTA -POP *'] || row.payload?.['FECHA DE VENTA -POP'] || row.payload?.fechaVentaPop || row.payload?.['Fecha de venta -pop'] || row.payload?.['Fecha de Venta -POP'] || row.payload?.fechaFacturacion || '',
     fechaActivacion: row.payload?.fechaActivacion || '',
     rawRecord: (() => {
@@ -863,8 +870,8 @@ export const getDespachoReportRows = async (filters?: {
         historial_estados: p.historial_estados,
         'Grupo de dispositivos': p['Grupo de dispositivos'],
         'Tipo de orden': p['Tipo de orden'],
-        'Estado': p['Estado'],
-        'estado': p['estado'],
+        'Estado': row.status_live || p['Estado'] || row.estado,
+        'estado': row.status_live || p['estado'] || row.estado,
         'suma_aprobada_cliente': p['suma_aprobada_cliente'],
         created_at: p.created_at || p['Creado en'] || p['Creado'] || row.created_at,
         id: p.id || p.id_orden || p.ordenNumero || p.order_name || row.order_name || row.order_id || p['Orden #'],
@@ -889,7 +896,10 @@ export const getDespachoReportRows = async (filters?: {
         'CANAL DE INGRESO': p.canalIngreso || p.origen || p.dealer || p.sucursal || p['CANAL DE INGRESO'] || p.canal_ingreso || row.origen || row.dealer || row.sucursal || row.payload?.canalIngreso,
         'CANAL INGRESO': p.canalIngreso || p.origen || p.dealer || p.sucursal || p['CANAL INGRESO'] || p.canal_ingreso || row.origen || row.dealer || row.sucursal || row.payload?.canalIngreso,
         'FECHA DE VENTA -POP': p['FECHA DE VENTA -POP *'] || p['FECHA DE VENTA -POP'] || p.fechaVentaPop || p.fechaFacturacion || row.payload?.fechaFacturacion,
-        'COLOR': p.color || p.COLOR || row.color,
+        'COLOR': row.color || p.color || p.COLOR,
+        modified_at: row.modified_at || p.modified_at,
+        closed_at: row.closed_at || p.closed_at,
+        done_at: row.done_at || p.done_at,
         'GUIAS CAEX': p.guiasCaex || p['GUIAS CAEX'] || p.guia || row.guia,
         'GARANTIA': p.garantia || p['GARANTIA'] || row.payload?.garantia,
         'TIPO DE INGRESO': p.tipoIngreso || p.operador || p.retail || p['TIPO DE INGRESO'] || row.operador || row.retail || row.payload?.tipoIngreso,
@@ -1381,5 +1391,283 @@ export const logSapAudit = async (entry: {
   });
   if (error && isMissingTableError(error)) return;
   throwIfError(error, 'despacho_sap_audit');
+};
+
+export type HistorialMovimientoInput = {
+  orden_id: string;
+  fecha_hora_cambio: string;
+  estado_anterior?: string | null;
+  estado_nuevo?: string | null;
+  grupo_nuevo?: string | null;
+  status_id_anterior?: number | null;
+  status_id_nuevo?: number | null;
+  origen?: string;
+  usuario?: string | null;
+  payload_crudo?: Record<string, unknown> | null;
+};
+
+export type HistorialFechasAgregadas = {
+  orden_id: string;
+  fecha_entrada_nuevo: string | null;
+  fecha_entrada_en_progreso: string | null;
+  fecha_entrada_pendiente: string | null;
+  fecha_entrada_listo: string | null;
+  fecha_entrada_entrega: string | null;
+  fecha_entrada_ganado: string | null;
+  fecha_entrada_perdido: string | null;
+  fecha_para_diagnosticar: string | null;
+  fecha_en_reparacion: string | null;
+  fecha_para_control_calidad: string | null;
+  fecha_para_entregar: string | null;
+};
+
+export const insertHistorialMovimiento = async (entry: HistorialMovimientoInput) => {
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase.from('historial_movimientos').insert({
+    orden_id: entry.orden_id,
+    fecha_hora_cambio: toIsoDate(entry.fecha_hora_cambio),
+    estado_anterior: entry.estado_anterior ?? null,
+    estado_nuevo: entry.estado_nuevo ?? null,
+    grupo_nuevo: entry.grupo_nuevo ?? null,
+    status_id_anterior: entry.status_id_anterior ?? null,
+    status_id_nuevo: entry.status_id_nuevo ?? null,
+    origen: entry.origen ?? 'webhook',
+    usuario: entry.usuario ?? null,
+    payload_crudo: entry.payload_crudo ?? null,
+  });
+
+  if (error && isMissingTableError(error)) {
+    throw new Error('La tabla historial_movimientos no existe. Ejecuta scripts/migrations/2026-historial-movimientos.sql');
+  }
+  throwIfError(error, 'historial_movimientos');
+};
+
+export const getHistorialFechasPorOrdenes = async (
+  orderIds: string[],
+  fechaParaEntregarEstado = 'PARA DEVOLUCION',
+): Promise<Map<string, HistorialFechasAgregadas>> => {
+  const unique = [...new Set(orderIds.map((id) => String(id).trim()).filter(Boolean))];
+  const map = new Map<string, HistorialFechasAgregadas>();
+  if (unique.length === 0) return map;
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.rpc('get_historial_fechas_por_ordenes', {
+    p_orden_ids: unique,
+    p_fecha_para_entregar_estado: fechaParaEntregarEstado,
+  });
+
+  if (error) {
+    if (isMissingTableError(error)) return map;
+    throwIfError(error, 'get_historial_fechas_por_ordenes');
+  }
+
+  for (const row of (data || []) as HistorialFechasAgregadas[]) {
+    map.set(String(row.orden_id), row);
+  }
+  return map;
+};
+
+export type HistorialMovimientoRow = {
+  orden_id: string;
+  estado_nuevo: string | null;
+  status_id_nuevo: number | null;
+  fecha_hora_cambio: string;
+};
+
+type OrderStatusHistoryRow = {
+  order_id: string;
+  status_id: number | null;
+  status_name: string | null;
+  changed_at: string;
+};
+
+/** Primera fecha por estado (columnas del reporte) agregada en aplicación. */
+export const getHistorialEstadoFechasPorOrdenes = async (
+  orderIds: string[],
+): Promise<Map<string, Record<string, string>>> => {
+  const { aggregateHistorialStatusDates, emptyHistorialStatusDates } = await import(
+    '@/modules/report-engine/shared/historial-status-columns'
+  );
+
+  const unique = [...new Set(orderIds.map((id) => String(id).trim()).filter(Boolean))];
+  const map = new Map<string, Record<string, string>>();
+  if (unique.length === 0) return map;
+
+  const supabase = getSupabaseAdmin();
+  const chunkSize = 200;
+  const allRows: HistorialMovimientoRow[] = [];
+
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+
+    const { data: historyData, error: historyError } = await supabase
+      .from('order_status_history')
+      .select('order_id, status_id, status_name, changed_at')
+      .in('order_id', chunk);
+
+    if (!historyError) {
+      for (const row of (historyData || []) as OrderStatusHistoryRow[]) {
+        allRows.push({
+          orden_id: String(row.order_id),
+          estado_nuevo: row.status_name,
+          status_id_nuevo: row.status_id,
+          fecha_hora_cambio: row.changed_at,
+        });
+      }
+    } else if (!isMissingTableError(historyError)) {
+      throwIfError(historyError, 'order_status_history');
+    }
+
+    const { data, error } = await supabase
+      .from('historial_movimientos')
+      .select('orden_id, estado_nuevo, status_id_nuevo, fecha_hora_cambio, grupo_nuevo')
+      .in('orden_id', chunk);
+
+    if (error) {
+      if (isMissingTableError(error)) continue;
+      throwIfError(error, 'historial_movimientos');
+    }
+    allRows.push(...((data || []) as HistorialMovimientoRow[]));
+  }
+
+  const byOrder = new Map<string, HistorialMovimientoRow[]>();
+  for (const row of allRows) {
+    const key = String(row.orden_id);
+    const list = byOrder.get(key) ?? [];
+    list.push(row);
+    byOrder.set(key, list);
+  }
+
+  const {
+    aggregateGrupoEntregaDate,
+    aggregateGrupoGanadoDate,
+    CLARO_GRUPO_ENTREGA_LABEL,
+    CLARO_GRUPO_GANADO_LABEL,
+  } = await import('@/modules/report-engine/shared/claro-date-sources');
+
+  for (const orderId of unique) {
+    const rows = byOrder.get(orderId) ?? [];
+    if (rows.length === 0) {
+      map.set(orderId, emptyHistorialStatusDates());
+      continue;
+    }
+    map.set(orderId, {
+      ...aggregateHistorialStatusDates(rows),
+      [CLARO_GRUPO_GANADO_LABEL]: aggregateGrupoGanadoDate(rows),
+      [CLARO_GRUPO_ENTREGA_LABEL]: aggregateGrupoEntregaDate(rows),
+    });
+  }
+
+  return map;
+};
+
+/** Resumen de origen de eventos en historial_movimientos por orden. */
+export const getHistorialOrigenByOrders = async (
+  orderIds: string[],
+): Promise<Map<string, string>> => {
+  const unique = [...new Set(orderIds.map((id) => String(id).trim()).filter(Boolean))];
+  const map = new Map<string, string>();
+  if (unique.length === 0) return map;
+
+  const supabase = getSupabaseAdmin();
+  const chunkSize = 200;
+
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from('historial_movimientos')
+      .select('orden_id, origen')
+      .in('orden_id', chunk);
+
+    if (error) {
+      if (isMissingTableError(error)) return map;
+      throwIfError(error, 'historial_movimientos');
+    }
+
+    const counts = new Map<string, Map<string, number>>();
+    for (const row of data || []) {
+      const key = String(row.orden_id);
+      const origen = String(row.origen || 'desconocido');
+      const byOrigen = counts.get(key) ?? new Map<string, number>();
+      byOrigen.set(origen, (byOrigen.get(origen) ?? 0) + 1);
+      counts.set(key, byOrigen);
+    }
+
+    const missingHistorial = chunk.filter((orderId) => {
+      const byOrigen = counts.get(orderId);
+      return !byOrigen || byOrigen.size === 0;
+    });
+
+    if (missingHistorial.length > 0) {
+      const { data: oshData, error: oshError } = await supabase
+        .from('order_status_history')
+        .select('order_id, source')
+        .in('order_id', missingHistorial);
+
+      if (!oshError) {
+        const oshCounts = new Map<string, Map<string, number>>();
+        for (const row of oshData || []) {
+          const key = String(row.order_id);
+          const source = String(row.source || 'order_status_history');
+          const bySource = oshCounts.get(key) ?? new Map<string, number>();
+          bySource.set(source, (bySource.get(source) ?? 0) + 1);
+          oshCounts.set(key, bySource);
+        }
+        for (const orderId of missingHistorial) {
+          const bySource = oshCounts.get(orderId);
+          if (!bySource || bySource.size === 0) continue;
+          const parts = [...bySource.entries()].map(([s, n]) => `${s} (${n})`);
+          map.set(orderId, `${parts.join(', ')} — order_status_history`);
+        }
+      } else if (!isMissingTableError(oshError)) {
+        throwIfError(oshError, 'order_status_history');
+      }
+    }
+
+    for (const orderId of chunk) {
+      if (map.has(orderId)) continue;
+      const byOrigen = counts.get(orderId);
+      if (!byOrigen || byOrigen.size === 0) {
+        map.set(orderId, 'Sin historial — ejecute backfill o active webhook');
+        continue;
+      }
+      const parts = [...byOrigen.entries()].map(([o, n]) => `${o} (${n})`);
+      const hasWebhook = byOrigen.has('webhook');
+      const onlyBackfill = byOrigen.size === 1 && byOrigen.has('backfill_incompleto');
+      const suffix = onlyBackfill
+        ? ' — punto de partida, no historial real previo'
+        : hasWebhook
+          ? ''
+          : '';
+      map.set(orderId, `${parts.join(', ')}${suffix}`);
+    }
+  }
+
+  return map;
+};
+
+export const deduplicateReportRowsByOrder = <T extends { orderId?: number | null; orderName?: string; fecha?: string }>(
+  rows: T[],
+): T[] => {
+  const byOrder = new Map<string, T>();
+
+  for (const row of rows) {
+    const key = row.orderId ? String(row.orderId) : String(row.orderName || '').trim();
+    if (!key) continue;
+
+    const existing = byOrder.get(key);
+    if (!existing) {
+      byOrder.set(key, row);
+      continue;
+    }
+
+    const existingTs = new Date(String(existing.fecha || 0)).getTime();
+    const rowTs = new Date(String(row.fecha || 0)).getTime();
+    if (rowTs >= existingTs) {
+      byOrder.set(key, row);
+    }
+  }
+
+  return [...byOrder.values()];
 };
 
