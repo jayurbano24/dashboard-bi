@@ -101,7 +101,14 @@ export function extractOrderryOrderSnapshot(match: Record<string, unknown>): Ord
     closed_at: (match.closed_at as string | null | undefined) ?? null,
     done_at: done_at ?? null,
     cliente,
-    telefono: String(client?.phone || '').trim(),
+    telefono: (() => {
+      const phone = client?.phone;
+      if (Array.isArray(phone)) {
+        const first = phone.find((p) => String(p ?? '').trim());
+        return String(first ?? '').trim();
+      }
+      return String(phone || '').trim();
+    })(),
     tipoOrden: String((match.order_type as { name?: string } | undefined)?.name || ''),
     estado: String(status?.name || ''),
     grupoDispositivo: String(asset?.group || match.kindof_good || '').trim(),
@@ -240,32 +247,47 @@ export async function fetchOrderryOrderSnapshot(
 export function mergeOrderrySnapshotIntoReportRow(
   row: Record<string, unknown>,
   snap: OrderryOrderSnapshot,
+  options?: { preferOrderry?: boolean },
 ): Record<string, unknown> {
+  const preferOrderry = options?.preferOrderry ?? false;
   const raw = (row.rawRecord || {}) as Record<string, unknown>;
   const pick = (current: unknown, next: string) => {
+    if (preferOrderry) {
+      const n = String(next ?? '').trim();
+      if (n && n !== 'N/A' && n !== '—') return n;
+    }
     const c = String(current ?? '').trim();
     if (c && c !== 'N/A' && c !== '—') return c;
     return next || c;
   };
 
+  const pickDate = (current: unknown, next: string | null) => {
+    if (preferOrderry && next) return next;
+    return (current as string | null | undefined) || next;
+  };
+
   const snapIsClosed = Boolean(String(snap.closed_at ?? '').trim());
-  const pickStatus = (current: unknown) =>
-    snapIsClosed && snap.estado ? snap.estado : pick(current, snap.estado);
+  const pickStatus = (current: unknown) => {
+    if (preferOrderry && snap.estado) return snap.estado;
+    return snapIsClosed && snap.estado ? snap.estado : pick(current, snap.estado);
+  };
 
   return {
     ...row,
     orderName: pick(row.orderName, snap.orderName),
-    created_at: row.created_at || snap.created_at,
-    closed_at: row.closed_at || snap.closed_at,
-    done_at: row.done_at || snap.done_at,
-    fecha_reparacion: row.fecha_reparacion || snap.done_at,
+    created_at: pickDate(row.created_at, snap.created_at),
+    closed_at: pickDate(row.closed_at, snap.closed_at),
+    done_at: pickDate(row.done_at, snap.done_at),
+    fecha_reparacion: pickDate(row.fecha_reparacion, snap.done_at),
     cliente: pick(row.cliente, snap.cliente),
     telefono: pick(row.telefono, snap.telefono),
     tipo_orden: pick(row.tipo_orden, snap.tipoOrden),
     estado: pickStatus(row.estado),
     status_live: pickStatus(row.status_live),
     statusId: snap.statusId ?? (row as Record<string, unknown>).statusId,
-    modified_at: (row as Record<string, unknown>).modified_at || snap.modified_at,
+    modified_at: preferOrderry
+      ? snap.modified_at || (row as Record<string, unknown>).modified_at
+      : (row as Record<string, unknown>).modified_at || snap.modified_at,
     garantia: pick(row.garantia, snap.garantia),
     canalIngreso: pick(row.canalIngreso, snap.canalIngreso),
     tipoIngreso: pick(row.tipoIngreso, snap.tipoIngreso),
@@ -275,9 +297,15 @@ export function mergeOrderrySnapshotIntoReportRow(
     sucursal: pick(row.sucursal, snap.sucursalBranch),
     folioPdv: pick(row.folioPdv, snap.folioPdv),
     fechaFacturacion: pick(row.fechaFacturacion, snap.fechaVentaPop),
+    imei: pick(row.imei, snap.serie),
+    serie: pick(row.serie, snap.serie),
+    marca: pick(row.marca, snap.marca),
+    marcaDispositivo: pick(row.marcaDispositivo, snap.marca),
+    modelo: pick(row.modelo, snap.modelo),
+    modeloDispositivo: pick(row.modeloDispositivo, snap.modelo),
     rawRecord: {
       ...raw,
-      'Creado en': raw['Creado en'] || snap.created_at,
+      'Creado en': pickDate(raw['Creado en'], snap.created_at) || snap.created_at,
       'Estado': pickStatus(raw['Estado']),
       'Nombre del cliente': pick(raw['Nombre del cliente'], snap.cliente),
       'Grupo de dispositivos': pick(raw['Grupo de dispositivos'], snap.grupoDispositivo),
@@ -287,13 +315,13 @@ export function mergeOrderrySnapshotIntoReportRow(
       COLOR: pick(raw.COLOR, snap.color),
       color: pick(raw.color, snap.color),
       'FOLIO PDV': pick(raw['FOLIO PDV'], snap.folioPdv),
-      folioPdv: snap.folioPdv || raw.folioPdv,
+      folioPdv: pick(raw.folioPdv, snap.folioPdv),
       'IN COURIER': pick(raw['IN COURIER'], snap.inCourier),
-      inCourier: snap.inCourier || raw.inCourier,
-      created_at: raw.created_at || snap.created_at,
-      closed_at: raw.closed_at || snap.closed_at,
-      done_at: raw.done_at || snap.done_at,
-      modified_at: raw.modified_at || snap.modified_at,
+      inCourier: pick(raw.inCourier, snap.inCourier),
+      created_at: pickDate(raw.created_at, snap.created_at),
+      closed_at: pickDate(raw.closed_at, snap.closed_at),
+      done_at: pickDate(raw.done_at, snap.done_at),
+      modified_at: pickDate(raw.modified_at, snap.modified_at),
       status:
         raw.status ||
         (snap.statusId
@@ -325,7 +353,13 @@ export function reportRowNeedsOrderryEnrich(row: Record<string, unknown>): boole
 
 export async function enrichReportRowsFromOrderry<T extends Record<string, unknown>>(
   rows: T[],
-  options?: { maxFetches?: number; concurrency?: number; allWithOrderId?: boolean },
+  options?: {
+    maxFetches?: number;
+    concurrency?: number;
+    allWithOrderId?: boolean;
+    /** Orderry gana sobre payload Supabase (reporte Claro). */
+    preferOrderry?: boolean;
+  },
 ): Promise<{ rows: T[]; enriched: number; skipped: number }> {
   const maxFetches = options?.maxFetches ?? 120;
   const concurrency = options?.concurrency ?? 12;
@@ -348,7 +382,9 @@ export async function enrichReportRowsFromOrderry<T extends Record<string, unkno
       const snap = await fetchOrderryOrderSnapshot(orderId);
       if (!snap) continue;
 
-      const merged = mergeOrderrySnapshotIntoReportRow(row, snap);
+      const merged = mergeOrderrySnapshotIntoReportRow(row, snap, {
+        preferOrderry: options?.preferOrderry,
+      });
       Object.assign(row, merged);
       enriched += 1;
 

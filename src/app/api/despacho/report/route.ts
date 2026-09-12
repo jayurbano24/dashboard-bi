@@ -219,7 +219,22 @@ export async function GET(request: Request) {
     }
 
     if (template === 'PLANTILLA_CLARO_MENSUAL') {
-      const claroRows = rows as Array<{ orderId?: number | null; orderName?: string }>;
+      const dedupedRows = deduplicateReportRowsByOrder(rows);
+      const claroRows = dedupedRows.filter((row) => {
+        const op = String(row.tipoIngreso || row.operador || '').trim().toUpperCase();
+        return op === 'OPERADOR' || op === 'DISTRIBUIDOR-CLARO';
+      });
+
+      const enrichResult = await enrichReportRowsFromOrderry(
+        claroRows as Record<string, unknown>[],
+        {
+          maxFetches: Math.min(claroRows.length, 300),
+          concurrency: 12,
+          allWithOrderId: true,
+          preferOrderry: true,
+        },
+      );
+
       const claroOrderIds = claroRows
         .map((row) => (row.orderId ? String(row.orderId) : ''))
         .filter(Boolean);
@@ -231,7 +246,7 @@ export async function GET(request: Request) {
 
       const useCase = new GenerateClaroReportUseCase();
       const { report, logs } = useCase.execute(
-        rows as any[],
+        claroRows as Parameters<typeof useCase.execute>[0],
         historialByOrder,
         historialOrigenByOrder,
       );
@@ -253,7 +268,17 @@ export async function GET(request: Request) {
         });
       }
 
-      return NextResponse.json({ ok: true, count: finalReport.length, rows: finalReport, logs });
+      return NextResponse.json({
+        ok: true,
+        count: finalReport.length,
+        rows: finalReport,
+        logs,
+        meta: {
+          dataSource: 'supabase_sync+orderry_live',
+          claroCandidates: claroRows.length,
+          orderryEnriched: enrichResult.enriched,
+        },
+      });
     }
 
     if (template) {

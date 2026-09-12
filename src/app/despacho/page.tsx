@@ -1925,7 +1925,9 @@ export default function DespachoPagina() {
                   ? 'Generando reporte PRONET (Supabase + enriquecimiento Orderry)...'
                   : reportTemplate === 'PLANTILLA_SERVITOTAL'
                     ? 'Generando reporte Servitotal...'
-                    : 'Generando reporte de la base de datos...'}
+                    : reportTemplate === 'PLANTILLA_CLARO_MENSUAL'
+                      ? 'Generando reporte Claro (Orderry en vivo + historial)...'
+                      : 'Generando reporte de la base de datos...'}
               </div>
             ) : reportRows.length === 0 ? (
               <div className="p-12 text-center text-slate-400 border border-dashed rounded bg-slate-50 space-y-2">

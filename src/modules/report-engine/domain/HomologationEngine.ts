@@ -43,7 +43,7 @@ export class HomologationEngine {
       createdAt: row.created_at ?? null,
       closedAt: row.closed_at ?? null,
       fechaEnvioTienda: hist[CLARO_HISTORIAL_DATE_KEYS.envioTiendaCac] || null,
-      fechaReparacion: hist[CLARO_HISTORIAL_DATE_KEYS.reparacionCsa] || null,
+      fechaReparacion: hist[CLARO_HISTORIAL_DATE_KEYS.reparacionCsa] || row.done_at || null,
       fechaEnvioCac: null,
       fechaEntregaCac: row.closed_at ?? null,
       fechaGrupoGanado: hist[CLARO_HISTORIAL_DATE_KEYS.grupoGanado] || null,
