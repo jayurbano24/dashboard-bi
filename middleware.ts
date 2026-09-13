@@ -9,10 +9,10 @@ const ADMIN_PATHS = ['/admin'];
 
 // Rutas permitidas por rol
 const ROLE_ACCESS: Record<string, string[]> = {
-  admin:      ['/', '/despacho', '/admin'],
-  supervisor: ['/', '/despacho'],
-  despacho:   ['/despacho'],
-  viewer:     ['/', '/despacho'],
+  admin:      ['/', '/despacho', '/separacion-sap', '/admin'],
+  supervisor: ['/', '/despacho', '/separacion-sap'],
+  despacho:   ['/despacho', '/separacion-sap'],
+  viewer:     ['/', '/despacho', '/separacion-sap'],
 };
 
 function normalizeText(value: string | null | undefined): string {
@@ -87,8 +87,8 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // /despacho: admin, rol con ruta permitida, O área "Despacho" asignada
-  if (pathname.startsWith('/despacho')) {
+  // /despacho y /separacion-sap: admin, rol con ruta permitida, O área "Despacho" asignada
+  if (pathname.startsWith('/despacho') || pathname.startsWith('/separacion-sap')) {
     const allowedByRole = canAccess(role, pathname);
     const allowedByArea = hasArea(accessibleAreas, 'Despacho');
     if (role === 'admin' || allowedByRole || allowedByArea) {

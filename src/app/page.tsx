@@ -8,6 +8,13 @@ import ClaimsXiaomiModule from './claims-xiaomi/ClaimsXiaomiModule';
 import ClaimsDtiModule from './claims-dti/ClaimsDtiModule';
 import { normalizeDeviceModel } from '@/lib/model-aliases';
 import {
+  formatClaroSlaTargetLabel,
+  getClaroSlaBusinessDays,
+  getClaroSlaTargetDays,
+  resolveGamNoGamFromCanal,
+  type GamNoGam,
+} from '@/lib/claro-sla';
+import {
   Card,
   DonutChart,
   BarChart,
@@ -467,12 +474,14 @@ type BackofficeSummary = {
   avgCollectionHours: number | null;
   avgSystemEntryHours: number | null;
   within24hRate: number;
+  pendingIngreso: number;
   pendingCollection: number;
 };
 
 type BackofficeBreakdownRow = {
   client: string;
   total: number;
+  pendingIngreso: number;
   matchedToOrderry: number;
   avgCollectionHours: number | null;
   avgSystemEntryHours: number | null;
@@ -501,9 +510,17 @@ type BackofficeRecentRow = {
 
 type BackofficeApiResponse = {
   connected: boolean;
+  sheetsConnected?: boolean;
+  sheetsLoaded?: number;
+  sheetsTotalRows?: number;
+  sheetErrors?: string[];
+  orderryConfigured?: boolean;
+  orderryMatched?: boolean;
   source?: string;
   warning?: string;
   error?: string;
+  orderryCutoverDate?: string;
+  orderryCutoverLabel?: string;
   summary: BackofficeSummary;
   breakdown: BackofficeBreakdownRow[];
   recentRows: BackofficeRecentRow[];
@@ -517,12 +534,13 @@ const EMPTY_BACKOFFICE_DATA: BackofficeApiResponse = {
     avgCollectionHours: null,
     avgSystemEntryHours: null,
     within24hRate: 0,
+    pendingIngreso: 0,
     pendingCollection: 0,
   },
   breakdown: [
-    { client: 'CLARO', total: 0, matchedToOrderry: 0, avgCollectionHours: null, avgSystemEntryHours: null },
-    { client: 'XIAOMI', total: 0, matchedToOrderry: 0, avgCollectionHours: null, avgSystemEntryHours: null },
-    { client: 'RETAILER', total: 0, matchedToOrderry: 0, avgCollectionHours: null, avgSystemEntryHours: null },
+    { client: 'CLARO', total: 0, pendingIngreso: 0, matchedToOrderry: 0, avgCollectionHours: null, avgSystemEntryHours: null },
+    { client: 'XIAOMI', total: 0, pendingIngreso: 0, matchedToOrderry: 0, avgCollectionHours: null, avgSystemEntryHours: null },
+    { client: 'RETAILER', total: 0, pendingIngreso: 0, matchedToOrderry: 0, avgCollectionHours: null, avgSystemEntryHours: null },
   ],
   recentRows: [],
 };
@@ -643,6 +661,52 @@ const extractModelFromOrder = (order: Record<string, any>) => {
   const raw = candidates.find((value) => typeof value === 'string' && value.trim())?.trim();
   if (!raw) return 'Sin Modelo';
   return normalizeDeviceModel(cleanDispatchLabel(raw));
+};
+
+const stripProductGroupFromTitle = (title: string, productGroup: string) => {
+  const normalizedTitle = title.trim();
+  const normalizedGroup = productGroup.trim();
+  if (!normalizedTitle) return '';
+  if (!normalizedGroup || normalizedGroup === 'Sin Grupo') return normalizedTitle;
+
+  if (normalizedTitle.toUpperCase().startsWith(normalizedGroup.toUpperCase())) {
+    return normalizedTitle.slice(normalizedGroup.length).replace(/^[\s/|-]+/, '').trim();
+  }
+
+  return normalizedTitle;
+};
+
+/** Marca + modelo sin el prefijo de tipo de producto (p. ej. sin "SMARTPHONE / TELEFONO MOVIL"). */
+const extractBrandModelFromOrder = (order: Record<string, any>) => {
+  const brand = extractBrandFromOrder(order);
+  const productGroup = extractProductGroupFromOrder(order);
+
+  const modelField = [
+    order?.asset?.model,
+    order?.device?.model?.name,
+    order?.device?.model,
+    order?.product?.model?.name,
+    order?.product?.model,
+    order?.item?.model?.name,
+    order?.item?.model,
+  ].find((value) => typeof value === 'string' && value.trim())?.trim();
+
+  let model = modelField ? normalizeDeviceModel(cleanDispatchLabel(modelField)) : '';
+
+  if (!model) {
+    const title = String(order?.asset?.title || order?.name || '').trim();
+    const strippedTitle = stripProductGroupFromTitle(title, productGroup);
+    model = strippedTitle
+      ? normalizeDeviceModel(cleanDispatchLabel(strippedTitle))
+      : 'Sin Modelo';
+  }
+
+  if (!model || model === 'Sin Modelo') {
+    return brand !== 'Sin Marca' ? brand : 'Sin identificar';
+  }
+  if (brand === 'Sin Marca') return model;
+  if (normalizeText(model).startsWith(normalizeText(brand))) return model;
+  return `${brand} ${model}`.trim();
 };
 
 const extractSkuFromModelText = (value: string | null | undefined) => {
@@ -998,11 +1062,6 @@ const formatDateTime = (value: string | null | undefined) => {
 
 const formatBackofficeCollection = (row: BackofficeRecentRow) => {
   if (row.collectedAt) return formatDateTime(row.collectedAt);
-
-  const status = (row.status || '').toUpperCase();
-  if (status.includes('RECOLECT')) return 'Recolectado';
-  if (status.includes('PENDIENTE')) return 'Pendiente de recojo';
-
   return 'Sin registro';
 };
 
@@ -1211,8 +1270,31 @@ const getBodegaEventDate = (order: Record<string, any>) => {
   return order?.done_at || order?.closed_at || order?.modified_at || order?.created_at || '';
 };
 
+const isClaroSlaOrder = (order: Record<string, any>) => {
+  const search = normalizeText([
+    order?.client?.name,
+    order?.order_type?.name,
+    extractEntryChannel(order),
+    extractEntryType(order),
+    order?.branch?.name,
+    ...Object.values(order?.custom_fields || {}),
+  ].join(' '));
+
+  return search.includes('CLARO') || search.includes('OPERADOR') || search.includes('DISTRIBUIDOR');
+};
+
+const getClaroGamNoGamFromOrder = (order: Record<string, any>): GamNoGam =>
+  resolveGamNoGamFromCanal(extractEntryChannel(order));
+
+const getSlaRegionLabel = (order: Record<string, any>): GamNoGam | null =>
+  isClaroSlaOrder(order) ? getClaroGamNoGamFromOrder(order) : null;
+
 const getSlaTargetDays = (order: Record<string, any>) => {
   if (!order?.created_at) return null;
+
+  if (isClaroSlaOrder(order)) {
+    return getClaroSlaTargetDays(getClaroGamNoGamFromOrder(order));
+  }
 
   const group = normalizeText(extractProductGroupFromOrder(order));
   const model = normalizeText(order?.asset?.title || order?.name || '');
@@ -1230,8 +1312,15 @@ const getSlaTargetDays = (order: Record<string, any>) => {
     model.includes('TABLET') ||
     model.includes('FEATURE PHONE');
 
-  if (isPhone) return 2; // Meta especial Móviles/Tablets/Feature Phones: 2 días hábiles
+  if (isPhone) return 2;
   return 4;
+};
+
+const getSlaTargetLabel = (order: Record<string, any>) => {
+  const region = getSlaRegionLabel(order);
+  if (region) return formatClaroSlaTargetLabel(region);
+  const targetDays = getSlaTargetDays(order);
+  return targetDays === null ? 'Sin objetivo' : `${targetDays} días`;
 };
 
 const getSlaAgingDays = (order: Record<string, any>) => {
@@ -1240,6 +1329,10 @@ const getSlaAgingDays = (order: Record<string, any>) => {
   const createdAt = new Date(order.created_at);
   const checkDate = new Date(order?.done_at || order?.closed_at || Date.now());
   if (Number.isNaN(createdAt.getTime()) || Number.isNaN(checkDate.getTime())) return null;
+
+  if (isClaroSlaOrder(order)) {
+    return getClaroSlaBusinessDays(createdAt, checkDate);
+  }
 
   return getBusinessDaysDiff(createdAt, checkDate);
 };
@@ -1274,6 +1367,7 @@ const getLateReason = (order: Record<string, any>) => {
   const targetDays = getSlaTargetDays(order);
   if (agingDays === null || targetDays === null) return 'Sin SLA';
   if (agingDays <= targetDays) return 'En SLA';
+  if (isClaroSlaOrder(order)) return 'Fuera de SLA';
 
   const status = normalizeText(order?.status?.name);
   if (status.includes('APROBACION')) return 'Esperando aprobación';
@@ -2304,7 +2398,8 @@ export default function DashboardMultimodular() {
   const [connectionStatus, setConnectionStatus] = useState<string>('Checking connection...');
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [backofficeData, setBackofficeData] = useState<BackofficeApiResponse>(EMPTY_BACKOFFICE_DATA);
-  const [backofficeStatus, setBackofficeStatus] = useState<string>('Supabase: cargando pre-alertas...');
+  const [backofficeStatus, setBackofficeStatus] = useState<string>('Cargando Google Sheets (Tienda Xiaomi, CLARO, Retailer)...');
+  const [backofficeLoading, setBackofficeLoading] = useState(true);
   const [selectedBackofficeClient, setSelectedBackofficeClient] = useState('ALL');
   const [selectedBackofficeStatus, setSelectedBackofficeStatus] = useState('ALL');
   const [backofficeSearch, setBackofficeSearch] = useState('');
@@ -2434,6 +2529,7 @@ export default function DashboardMultimodular() {
     let isActive = true;
 
     async function loadBackofficeData(attempt = 0) {
+      setBackofficeLoading(true);
       try {
         const response = await fetch(`/api/backoffice?range=${encodeURIComponent(selectedDateRange)}`, {
           cache: 'no-store',
@@ -2454,21 +2550,17 @@ export default function DashboardMultimodular() {
           return data;
         });
 
-        if (data.connected) {
-          if (data.source === 'orderry-only') {
-            setBackofficeStatus(`Orderry conectado · ${data.summary.totalRequests} registros disponibles${data.warning ? ' · Google Sheets/Supabase pendiente' : ''}`);
-          } else if (String(data.source || '').startsWith('googlesheets')) {
-            setBackofficeStatus(`Google Sheets conectado · ${data.summary.totalRequests} registros · Vinculadas a Orderry: ${data.summary.matchedToOrderry}`);
-          } else {
-            setBackofficeStatus(`Pre-alertas: ${data.summary.totalRequests} · Vinculadas a Orderry: ${data.summary.matchedToOrderry}`);
-          }
+        if (data.sheetsConnected || data.connected) {
+          const sheetsTotal = data.sheetsTotalRows ?? data.summary.totalRequests;
+          const tabs = data.sheetsLoaded ? `${data.sheetsLoaded}/3 pestañas` : 'Google Sheets';
+          setBackofficeStatus(
+            `Google Sheets conectado · ${tabs} · ${sheetsTotal} pre-alertas · ${data.summary.totalRequests} en rango · ${data.summary.pendingIngreso} pendientes ingreso · ${data.summary.matchedToOrderry} cruzadas con Orderry`,
+          );
+        } else if (data.source === 'orderry-only') {
+          setBackofficeStatus('Google Sheets no disponible · mostrando respaldo desde Orderry');
         } else {
-          const incomingHasData = (data.summary?.totalRequests || 0) > 0 || (data.recentRows?.length || 0) > 0;
-          if (!incomingHasData && String(data.source || 'none') === 'none') {
-            setBackofficeStatus('Sincronizando fuentes de Backoffice...');
-          } else {
-            setBackofficeStatus(data.error || 'Sin acceso a Supabase');
-          }
+          const sheetErrorHint = data.sheetErrors?.length ? data.sheetErrors.join(' · ') : '';
+          setBackofficeStatus(data.warning || data.error || sheetErrorHint || 'Esperando Google Sheets (Tienda Xiaomi, CLARO, Retailer)...');
         }
       } catch (error) {
         if (attempt < 1) {
@@ -2478,7 +2570,9 @@ export default function DashboardMultimodular() {
           }, 1200);
           return;
         }
-        setBackofficeStatus('Error leyendo pre-alertas logísticas');
+        setBackofficeStatus('Error leyendo pre-alertas logísticas (timeout o servidor ocupado). Reintente con F5.');
+      } finally {
+        if (isActive) setBackofficeLoading(false);
       }
     }
 
@@ -2530,32 +2624,15 @@ export default function DashboardMultimodular() {
   const backofficeBreakdown = backofficeData.breakdown.length ? backofficeData.breakdown : EMPTY_BACKOFFICE_DATA.breakdown;
   const recentBackofficeRows = backofficeData.recentRows;
   const hasBackofficeData = backofficeSummary.totalRequests > 0 || recentBackofficeRows.length > 0;
-  const isGoogleSheetsSource = String(backofficeData.source || '').startsWith('googlesheets');
-  const isSupabaseSource = backofficeData.source === 'sheets+orderry' || backofficeData.source === 'supabase+orderry';
+  const isGoogleSheetsSource = Boolean(backofficeData.sheetsConnected) || String(backofficeData.source || '').startsWith('googlesheets');
+  const isSupabaseSource = backofficeData.source === 'supabase+orderry';
   const isOrderryOnlySource = backofficeData.source === 'orderry-only';
-  const isBackofficeIngresada = (row: BackofficeRecentRow) => {
-    const status = (row.status || '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toUpperCase();
+  const isSheetsConnected = Boolean(backofficeData.sheetsConnected || backofficeData.connected || isGoogleSheetsSource || isSupabaseSource);
+  const isBackofficePendingIngreso = (row: BackofficeRecentRow) => row.status === 'Pendiente ingreso';
 
-    const requestTime = row.requestAt ? new Date(row.requestAt).getTime() : NaN;
-    const orderryTime = row.orderryAt ? new Date(row.orderryAt).getTime() : NaN;
-    const hasValidRequest = !Number.isNaN(requestTime);
-    const hasValidOrderry = !Number.isNaN(orderryTime);
-    const isHistoricalBeforeRequest = hasValidRequest && hasValidOrderry && orderryTime < requestTime - 6 * 60 * 60 * 1000;
+  const isBackofficeIngresada = (row: BackofficeRecentRow) => !isBackofficePendingIngreso(row);
 
-    if (row.historicalDetected || isHistoricalBeforeRequest) return false;
-
-    const hasOrderryEvidence = Boolean(String(row.orderryAt || '').trim() || String(row.matchedOrderNumber || '').trim());
-
-    if (hasOrderryEvidence) return true;
-    if (status.includes('PENDIENTE')) return false;
-
-    return status.includes('ACEPTAD') || status.includes('INGRESAD');
-  };
-
-  const isBackofficePendiente = (row: BackofficeRecentRow) => !isBackofficeIngresada(row);
+  const isBackofficePendiente = (row: BackofficeRecentRow) => isBackofficePendingIngreso(row);
 
   const isWithinBackofficeUiDateRange = (row: BackofficeRecentRow) => {
     const sourceDate = row.requestAt || row.orderryAt || row.closedWonAt || null;
@@ -2611,6 +2688,31 @@ export default function DashboardMultimodular() {
     return sortBackofficeRowsByDate(rows);
   }, [recentBackofficeRows, selectedBackofficeClient, backofficeSearch, backofficeFromDate, backofficeToDate, backofficeSortOrder]);
 
+  const backofficeEmptyMessage = useMemo(() => {
+    if (backofficeLoading) {
+      return 'Cargando Google Sheets (Tienda Xiaomi, CLARO, Retailer)...';
+    }
+    if (hasBackofficeData && filteredBackofficeRows.length === 0 && pendingBackofficeRows.length === 0) {
+      return 'No hay pre-alertas visibles con los filtros actuales.';
+    }
+    if (backofficeData.warning) return backofficeData.warning;
+    if (backofficeData.error) return backofficeData.error;
+    if (backofficeData.sheetErrors?.length) return backofficeData.sheetErrors.join(' · ');
+    if (isSheetsConnected || hasBackofficeData) {
+      return 'Sin pre-alertas en el rango seleccionado. Pruebe ampliar el filtro de fechas del dashboard.';
+    }
+    return 'Esperando Google Sheets (Tienda Xiaomi, CLARO, Retailer)...';
+  }, [
+    backofficeLoading,
+    backofficeData.warning,
+    backofficeData.error,
+    backofficeData.sheetErrors,
+    hasBackofficeData,
+    filteredBackofficeRows.length,
+    pendingBackofficeRows.length,
+    isSheetsConnected,
+  ]);
+
   const exportBackofficeExcel = async () => {
     const normalizeDayValue = (value: number | null | undefined) => {
       if (value === null || value === undefined || Number.isNaN(value)) return null;
@@ -2624,6 +2726,11 @@ export default function DashboardMultimodular() {
       IMEI_Folio: row.trackingCode || '',
       Equipo: row.equipmentName || '',
       Fecha_Solicitud: formatDateTime(row.requestAt),
+      Recoleccion: formatDateTime(row.collectedAt),
+      Hrs_Recoleccion: (() => {
+        const hours = row.collectionHours ?? calculateDiffHours(row.requestAt, row.collectedAt);
+        return hours === null ? '' : hours.toFixed(1);
+      })(),
       Ingreso_Orderry: formatDateTime(row.orderryAt),
       Cierre_Ganada: formatDateTime(row.closedWonAt || null),
       TAT_Dias_Solicitud_a_Orderry: normalizeDayValue(row.systemDays ?? calculateDiffDays(row.requestAt, row.orderryAt)),
@@ -3140,7 +3247,7 @@ export default function DashboardMultimodular() {
       .map((order) => ({
         id: String(order?.id || order?.number || 'SIN-ID'),
         number: order?.number || 'Sin número',
-        equipment: order?.asset?.title || order?.name || 'Equipo sin nombre',
+        brandModel: extractBrandModelFromOrder(order),
         productGroup: extractProductGroupFromOrder(order) || 'Sin clasificar',
         status: order?.status?.name || 'Sin estatus',
         dueDate: formatDateTime(order?.created_at),
@@ -3148,6 +3255,8 @@ export default function DashboardMultimodular() {
         technician: extractTechnicianFromOrder(order),
         reason: getLateReason(order),
         slaTarget: getSlaTargetDays(order) || 0,
+        slaTargetLabel: getSlaTargetLabel(order),
+        slaRegion: getSlaRegionLabel(order),
       }))
       .sort((a, b) => b.overdueDays - a.overdueDays);
   }, [filteredOrders, excludePendingFromSla, excludedSlaStatuses]);
@@ -3160,7 +3269,7 @@ export default function DashboardMultimodular() {
       .map((order) => ({
         id: String(order?.id || order?.number || 'SIN-ID'),
         number: order?.number || 'Sin número',
-        equipment: order?.asset?.title || order?.name || 'Equipo sin nombre',
+        brandModel: extractBrandModelFromOrder(order),
         productGroup: extractProductGroupFromOrder(order) || 'Sin clasificar',
         status: order?.status?.name || 'Sin estatus',
         dueDate: formatDateTime(order?.created_at),
@@ -3168,6 +3277,8 @@ export default function DashboardMultimodular() {
         technician: extractTechnicianFromOrder(order),
         reason: 'En SLA',
         slaTarget: getSlaTargetDays(order) || 0,
+        slaTargetLabel: getSlaTargetLabel(order),
+        slaRegion: getSlaRegionLabel(order),
       }))
       .slice(0, 100);
   }, [overdueSlaOrders, selectedSlaSegment, slaScopedOrders]);
@@ -3181,13 +3292,14 @@ export default function DashboardMultimodular() {
     const rows = filtered.map((item) => {
       const row: Record<string, string | number> = {
         'Orden': item.number,
-        'Equipo': item.equipment,
+        'Marca y Modelo': item.brandModel,
         'Tipo de Producto': item.productGroup,
         'Técnico': item.technician,
         'Estado': item.status,
         'Motivo': item.reason,
         'Fecha Ingreso': item.dueDate,
-        'Objetivo SLA (días)': item.slaTarget,
+        'GAM / NO GAM': item.slaRegion || 'N/A',
+        'Objetivo SLA': item.slaTargetLabel,
       };
       row[overdueDaysLabel] = item.overdueDays;
       return row;
@@ -6045,15 +6157,24 @@ export default function DashboardMultimodular() {
         </div>
       </Flex>
 
-      <div className="mb-4 flex justify-end">
+      <div className="mb-4 flex justify-end gap-2">
         {(canSeeAllAreas || canSeeArea('Despacho')) && (
-          <a
-            href="/despacho"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
-          >
-            <Truck className="w-3.5 h-3.5" />
-            Módulo de Despacho
-          </a>
+          <>
+            <a
+              href="/despacho"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+            >
+              <Truck className="w-3.5 h-3.5" />
+              Módulo de Despacho
+            </a>
+            <a
+              href="/separacion-sap"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-100 transition-colors"
+            >
+              <Package className="w-3.5 h-3.5" />
+              Separación SAP
+            </a>
+          </>
         )}
       </div>
 
@@ -6278,7 +6399,8 @@ export default function DashboardMultimodular() {
                     <thead className="bg-slate-100 sticky top-0">
                       <tr>
                         <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Orden</th>
-                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Equipo</th>
+                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Marca y Modelo</th>
+                        <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Tipo de Producto</th>
                         <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Estado</th>
                         <th className="border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700">Ingreso</th>
                         <th className="border border-slate-200 px-3 py-2 text-right font-semibold text-slate-700">{selectedSlaSegment === 'Fuera SLA' ? 'Días vencida' : 'Margen SLA'}</th>
@@ -6290,22 +6412,23 @@ export default function DashboardMultimodular() {
                         <tr key={item.id} className="bg-white even:bg-slate-50 align-top">
                           <td className="border border-slate-200 px-3 py-2 font-medium text-slate-900">{item.number}</td>
                           <td className="border border-slate-200 px-3 py-2 text-slate-700">
-                            <div>{item.equipment}</div>
+                            <div>{item.brandModel}</div>
                             <div className="text-xs text-slate-500">{item.technician}</div>
                           </td>
+                          <td className="border border-slate-200 px-3 py-2 text-slate-700">{item.productGroup}</td>
                           <td className="border border-slate-200 px-3 py-2 text-slate-700">
                             <div>{item.status}</div>
-                            <div className="text-xs text-rose-600">{item.reason}</div>
+                            <div className={`text-xs ${selectedSlaSegment === 'Fuera SLA' ? 'text-rose-600' : 'text-emerald-600'}`}>{item.reason}</div>
                           </td>
                           <td className="border border-slate-200 px-3 py-2 text-slate-700">
                             <div>{item.dueDate}</div>
-                            <div className="text-xs text-slate-500">Objetivo: {item.slaTarget} días</div>
+                            <div className="text-xs text-slate-500">Objetivo: {item.slaTargetLabel}</div>
                           </td>
                           <td className={`border border-slate-200 px-3 py-2 text-right font-semibold ${selectedSlaSegment === 'Fuera SLA' ? 'text-rose-600' : 'text-emerald-600'}`}>{item.overdueDays}</td>
                         </tr>
                       )) : (
                         <tr className="bg-white">
-                          <td colSpan={5} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
+                          <td colSpan={6} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                             {slaEquipFilter !== 'ALL' ? `Sin resultados para "${slaEquipFilter}".` : 'No hay órdenes para el estado SLA seleccionado.'}
                           </td>
                         </tr>
@@ -6481,7 +6604,9 @@ export default function DashboardMultimodular() {
               <Card decoration="left" decorationColor="indigo">
                 <Text className="text-slate-500">Pre-alertas recibidas</Text>
                 <Metric>{backofficeSummary.totalRequests}</Metric>
-                <Text className="mt-2 text-xs text-slate-500 font-medium">Fuente: Supabase</Text>
+                <Text className="mt-2 text-xs text-slate-500 font-medium">
+                  {isSheetsConnected ? 'Fuente: Google Sheets' : isOrderryOnlySource ? 'Fuente: respaldo Orderry' : 'Fuente: Google Sheets (pendiente)'}
+                </Text>
               </Card>
               <Card decoration="left" decorationColor="cyan">
                 <Text className="text-slate-500">Vinculadas a Orderry</Text>
@@ -6506,7 +6631,7 @@ export default function DashboardMultimodular() {
               <Card decoration="left" decorationColor="amber">
                 <Text className="text-slate-500">Recolección &lt; 24h</Text>
                 <Metric>{backofficeSummary.within24hRate}%</Metric>
-                <Text className="mt-2 text-xs text-amber-700 font-bold">{backofficeSummary.pendingCollection} sin ingreso en Orderry</Text>
+                <Text className="mt-2 text-xs text-amber-700 font-bold">{backofficeSummary.pendingIngreso ?? backofficeSummary.pendingCollection} sin ingreso en Orderry</Text>
               </Card>
             </Grid>
 
@@ -6562,28 +6687,32 @@ export default function DashboardMultimodular() {
                     <div>
                       <Text className="font-bold text-blue-900">{backofficeStatus}</Text>
                       <Text className="text-xs text-blue-600">
-                        {backofficeData.source === 'orderry-only'
-                          ? 'Fuente actual: Orderry'
-                          : String(backofficeData.source || '').startsWith('googlesheets')
-                            ? 'Fuente actual: Google Sheets + Orderry'
-                            : 'Fuente combinada: formularios + Orderry'}
+                        {isSheetsConnected
+                          ? `Fuente actual: Google Sheets (${backofficeData.sheetsLoaded ?? 3} pestañas) · cruce Orderry`
+                          : isOrderryOnlySource
+                            ? 'Fuente actual: respaldo Orderry (Sheets no disponible)'
+                            : 'Fuente actual: Google Sheets (conectando...)'}
                       </Text>
                     </div>
                   </div>
                   <div className="flex items-center p-4 bg-white border border-amber-200 rounded-xl">
                     <Icon icon={AlertTriangle} color="amber" variant="light" className="mr-4" />
                     <div>
-                      <Text className="font-bold text-amber-900">{backofficeSummary.pendingCollection} casos no recolectados o sin ingreso a sistema</Text>
-                      <Text className="text-xs text-amber-600">Si no existe orden o dato en Orderry, el caso se considera pendiente de recolección</Text>
+                      <Text className="font-bold text-amber-900">{backofficeSummary.pendingIngreso ?? backofficeSummary.pendingCollection} pre-alertas sin ingreso a Orderry</Text>
+                      <Text className="text-xs text-amber-600">
+                        Tickets con Estado = Pendiente ingreso (sin Codigo_Cruce_TCGT), desde go-live Orderry
+                        {backofficeData.orderryCutoverLabel ? ` (${backofficeData.orderryCutoverLabel})` : ''}
+                        {' · excluye pre-alertas del sistema anterior'}
+                      </Text>
                     </div>
                   </div>
                   {backofficeBreakdown.map((item) => (
                     <div key={item.client} className="flex items-center p-4 bg-white border border-slate-200 rounded-xl">
                       <Icon icon={Truck} color="indigo" variant="light" className="mr-4" />
                       <div>
-                        <Text className="font-bold text-slate-900">{item.client}: {item.total} pre-alertas</Text>
+                        <Text className="font-bold text-slate-900">{item.client}: {item.pendingIngreso ?? 0} pre-alertas</Text>
                         <Text className="text-xs text-slate-600">
-                          {item.matchedToOrderry} vinculadas · TAT sistema {formatHoursMetric(item.avgSystemEntryHours)}
+                          {item.pendingIngreso ?? 0} pendientes ingreso · {item.matchedToOrderry} vinculadas en rango · TAT {formatHoursMetric(item.avgSystemEntryHours)}
                         </Text>
                       </div>
                     </div>
@@ -6649,16 +6778,14 @@ export default function DashboardMultimodular() {
                 <Flex justifyContent="between" alignItems="center" className="gap-3 flex-wrap">
                   <div>
                     <Title>Detalle de Pre-alertas Logísticas</Title>
-                    <Text className="mt-2 text-xs text-slate-500">Solicitud, recolección e ingreso a Orderry por cliente.</Text>
+                    <Text className="mt-2 text-xs text-slate-500">Pre-alertas desde Google Sheets, cruzadas con Orderry para recolección e ingreso.</Text>
                   </div>
-                  <Badge color={(isGoogleSheetsSource || isSupabaseSource || hasBackofficeData) ? 'emerald' : (backofficeData.connected || isOrderryOnlySource) ? 'blue' : 'amber'}>
-                      {isGoogleSheetsSource
-                        ? 'Google Sheets + Orderry'
-                        : isSupabaseSource
-                          ? 'Supabase + Orderry'
-                          : (backofficeData.connected || isOrderryOnlySource || hasBackofficeData)
-                            ? 'Orderry conectado'
-                            : 'Esperando acceso'}
+                  <Badge color={isSheetsConnected ? 'emerald' : isOrderryOnlySource ? 'blue' : 'amber'}>
+                      {isSheetsConnected
+                        ? `Google Sheets${backofficeData.orderryMatched ? ' + Orderry' : ''}`
+                        : isOrderryOnlySource
+                          ? 'Respaldo Orderry'
+                          : 'Esperando Google Sheets'}
                   </Badge>
                 </Flex>
                 <div className="mt-4 flex gap-3 flex-wrap">
@@ -6750,7 +6877,7 @@ export default function DashboardMultimodular() {
                         </tr>
                       )) : (
                         <tr className="bg-white">
-                          <td colSpan={11} className="border border-slate-200 px-3 py-6 text-center text-slate-500">Aún no hay filas visibles desde Supabase o faltan credenciales de acceso.</td>
+                          <td colSpan={11} className="border border-slate-200 px-3 py-6 text-center text-slate-500">{backofficeEmptyMessage}</td>
                         </tr>
                       )}
                     </tbody>

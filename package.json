@@ -22,7 +22,8 @@
     "orderry:test-connection": "npx tsx scripts/test-orderry-connection.ts",
     "historial:backfill": "node scripts/backfill-historial-movimientos.mjs",
     "supabase:sync-agencies": "python scripts/sync_agencies_to_supabase.py",
-    "supabase:import-prealerts": "python scripts/import_backoffice_prealerts.py"
+    "supabase:import-prealerts": "python scripts/import_backoffice_prealerts.py",
+    "db:separacion-sap": "node scripts/apply-separacion-sap-migration.mjs"
   },
   "dependencies": {
     "@headlessui/react": "^2.2.10",

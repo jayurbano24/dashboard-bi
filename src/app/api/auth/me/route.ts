@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { NextResponse } from 'next/server';
+import { resolveUserJobTitle } from '@/lib/separacion-sap-caja-auth';
+import { canDeleteClosedCaja } from '@/modules/separacion-sap/domain/cajas/caja-delete-permissions';
 
 export async function GET() {
   try {
@@ -19,7 +21,7 @@ export async function GET() {
 
     const [{ data: roleData }, { data: profileRow }, { data: areasData }] = await Promise.all([
       supabase.rpc('get_my_role'),
-      supabase.from('user_profiles').select('first_name, last_name, areas').eq('user_id', user.id).single(),
+      supabase.from('user_profiles').select('first_name, last_name, areas').eq('user_id', user.id).maybeSingle(),
       supabase.rpc('get_my_accessible_areas'),
     ]);
 
@@ -51,6 +53,8 @@ export async function GET() {
         : [];
     }
 
+    const jobTitle = await resolveUserJobTitle(user.id, meta);
+
     return NextResponse.json({
       user: {
         id: user.id,
@@ -60,6 +64,8 @@ export async function GET() {
         lastName: profileRow?.last_name ?? (metadataLastName || null),
         areas: profileRow?.areas ?? [],
         accessibleAreas,
+        jobTitle,
+        canDeleteClosedCajas: canDeleteClosedCaja({ email: user.email, jobTitle }),
       },
     });
   } catch {

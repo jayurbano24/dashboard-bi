@@ -1419,6 +1419,14 @@ export default function DespachoPagina() {
           </div>
         </div>
         <div className="flex items-center space-x-3">
+          <Link
+            href="/separacion-sap"
+            className="flex items-center space-x-1.5 bg-teal-800 hover:bg-teal-700 text-xs text-white px-3 py-1.5 rounded-md border border-teal-600 transition"
+            title="Módulo Separación SAP — Cajas PX y captura BSD"
+          >
+            <Barcode className="w-3.5 h-3.5" />
+            <span>Separación SAP</span>
+          </Link>
           <button
             onClick={handleSyncAgencies}
             disabled={syncingAgencies}

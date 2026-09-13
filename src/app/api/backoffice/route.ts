@@ -1,8 +1,58 @@
 import { NextResponse } from 'next/server';
-import { getBackofficePrealertRows, getBackofficePrealertRowsFromGoogleSheets } from '@/lib/supabase-store';
+import {
+  getBackofficePrealertRows,
+  getHistorialEstadoFechasPorOrdenes,
+  loadBackofficePrealertSheets,
+} from '@/lib/supabase-store';
+import {
+  formatOrderryCutoverLabel,
+  getOrderryCutoverDateIso,
+  isOnOrAfterOrderryCutover,
+} from '@/lib/backoffice-orderry-cutover';
+import { CLARO_HISTORIAL_DATE_KEYS } from '@/modules/report-engine/shared/claro-date-sources';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+export const maxDuration = 120;
+
+const BACKOFFICE_RESPONSE_CACHE_TTL_MS = Number(process.env.BACKOFFICE_RESPONSE_CACHE_TTL_MS || '180000');
+const BACKOFFICE_FLEXIBLE_MATCH_MAX_AGE_DAYS = Number(process.env.BACKOFFICE_FLEXIBLE_MATCH_MAX_AGE_DAYS || '120');
+const BACKOFFICE_HISTORIAL_MAX_ORDERS = Number(process.env.BACKOFFICE_HISTORIAL_MAX_ORDERS || '200');
+
+type BackofficeApiPayload = {
+  connected: boolean;
+  sheetsConnected: boolean;
+  sheetsLoaded: number;
+  sheetsTotalRows: number;
+  sheetErrors?: string[];
+  orderryConfigured: boolean;
+  orderryMatched: boolean;
+  source: string;
+  warning?: string;
+  error?: string;
+  orderryCutoverDate: string;
+  orderryCutoverLabel: string;
+  summary: {
+    totalRequests: number;
+    matchedToOrderry: number;
+    avgCollectionHours: number | null;
+    avgSystemEntryHours: number | null;
+    within24hRate: number;
+    pendingIngreso: number;
+    pendingCollection: number;
+  };
+  breakdown: Array<{
+    client: string;
+    total: number;
+    pendingIngreso: number;
+    matchedToOrderry: number;
+    avgCollectionHours: number | null;
+    avgSystemEntryHours: number | null;
+  }>;
+  recentRows: BackofficePublicRow[];
+};
+
+let backofficeResponseCache: { key: string; expiresAt: number; payload: BackofficeApiPayload } | null = null;
 
 type GenericOrder = Record<string, any>;
 type MatchResult = { order: GenericOrder | null; method: string };
@@ -53,6 +103,96 @@ const getClosedWonAtFromOrder = (order: GenericOrder | null) => {
   }
   return null;
 };
+
+const RECOLECCION_HISTORIAL_LABEL = CLARO_HISTORIAL_DATE_KEYS.envioTiendaCac;
+
+type BackofficeEnrichedRow = {
+  client: string;
+  sheetTitle: string;
+  reference: string;
+  trackingCode: string;
+  customer: string;
+  equipmentName: string;
+  requestAt: string | null;
+  collectedAt: string | null;
+  orderryAt: string | null;
+  closedWonAt: string | null;
+  matchedOrderNumber: string;
+  matchedOrderId: string;
+  matchMethod: string;
+  collectionHours: number | null;
+  systemHours: number | null;
+  systemDays: number | null;
+  closedWonDays: number | null;
+  historicalDetected: boolean;
+  status: string;
+};
+
+type BackofficePublicRow = Omit<BackofficeEnrichedRow, 'matchedOrderId'>;
+
+const attachRecoleccionFromHistorial = async (
+  rows: BackofficeEnrichedRow[],
+): Promise<{ rows: BackofficeEnrichedRow[]; warning: string }> => {
+  const orderIds = [
+    ...new Set(
+      rows
+        .filter((row) => row.matchedOrderId && !row.historicalDetected)
+        .map((row) => row.matchedOrderId),
+    ),
+  ].slice(0, BACKOFFICE_HISTORIAL_MAX_ORDERS);
+
+  if (!orderIds.length) {
+    return {
+      rows: rows.map((row) => ({
+        ...row,
+        collectedAt: null,
+        collectionHours: null,
+      })),
+      warning: '',
+    };
+  }
+
+  let historialByOrder: Awaited<ReturnType<typeof getHistorialEstadoFechasPorOrdenes>>;
+  try {
+    historialByOrder = await getHistorialEstadoFechasPorOrdenes(orderIds);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'No fue posible leer historial de recolección.';
+    return {
+      rows: rows.map((row) => ({
+        ...row,
+        collectedAt: null,
+        collectionHours: null,
+      })),
+      warning: message,
+    };
+  }
+
+  return {
+    rows: rows.map((row) => {
+    if (!row.matchedOrderId || row.historicalDetected) {
+      return { ...row, collectedAt: null, collectionHours: null };
+    }
+
+    const recoleccionAt = historialByOrder.get(row.matchedOrderId)?.[RECOLECCION_HISTORIAL_LABEL]?.trim() || null;
+    const collectedAt = recoleccionAt || null;
+
+      return {
+        ...row,
+        collectedAt,
+        collectionHours: diffHours(row.requestAt, collectedAt),
+      };
+    }),
+    warning: '',
+  };
+};
+
+const stripInternalBackofficeFields = (row: BackofficeEnrichedRow): BackofficePublicRow => {
+  const { matchedOrderId: _matchedOrderId, ...publicRow } = row;
+  return publicRow;
+};
+
+/** Pre-alerta = ticket de Google Sheets sin orden vinculada en Orderry (mismo criterio que el reporte). */
+const isPendingIngresoStatus = (status: string) => status === 'Pendiente ingreso';
 
 const uniqueKeys = (values: unknown[]) => {
   return Array.from(
@@ -214,7 +354,7 @@ const classifyClientFromOrder = (order: GenericOrder) => {
   return 'RETAILER';
 };
 
-const buildFallbackRowsFromOrders = (orders: GenericOrder[]) => {
+const buildFallbackRowsFromOrders = (orders: GenericOrder[]): BackofficeEnrichedRow[] => {
   return orders.slice(0, 250).map((order) => {
     const requestAt = extractRequestAtFromOrder(order);
     const orderryAt = order?.created_at || null;
@@ -235,6 +375,7 @@ const buildFallbackRowsFromOrders = (orders: GenericOrder[]) => {
       orderryAt,
       closedWonAt,
       matchedOrderNumber: order?.number || '',
+      matchedOrderId: order?.id ? String(order.id) : '',
       matchMethod: 'Aceptado en Orderry',
       collectionHours: null,
       systemHours,
@@ -246,6 +387,8 @@ const buildFallbackRowsFromOrders = (orders: GenericOrder[]) => {
   });
 };
 
+const PREALERT_DATE_GRACE_MS = 15 * 60 * 1000;
+
 const diffHours = (start: string | null, end: string | null) => {
   if (!start || !end) return null;
 
@@ -254,7 +397,64 @@ const diffHours = (start: string | null, end: string | null) => {
 
   if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null;
 
-  return Number(Math.abs((endDate.getTime() - startDate.getTime()) / 36e5).toFixed(1));
+  const hours = (endDate.getTime() - startDate.getTime()) / 36e5;
+  if (hours < 0) return null;
+
+  return Number(hours.toFixed(1));
+};
+
+const isOrderBeforePrealertRequest = (requestAt: string | null, orderCreatedAt: unknown) => {
+  if (!requestAt || !orderCreatedAt) return false;
+
+  const requestDate = new Date(requestAt);
+  const orderDate = new Date(String(orderCreatedAt));
+
+  if (Number.isNaN(requestDate.getTime()) || Number.isNaN(orderDate.getTime())) return false;
+
+  return orderDate.getTime() < requestDate.getTime() - PREALERT_DATE_GRACE_MS;
+};
+
+const getOrderMatchKeys = (order: GenericOrder) =>
+  uniqueKeys([
+    order?.number,
+    order?.id,
+    order?.name,
+    order?.asset?.title,
+    order?.asset?.uid,
+    order?.asset?.serial,
+    order?.asset?.imei,
+    order?.serial_number,
+    order?.imei,
+    ...Object.values(order?.custom_fields || {}),
+  ]);
+
+const pickOrderForPrealert = (
+  candidates: GenericOrder[],
+  requestAt: string | null,
+  method: string
+): MatchResult => {
+  const uniqueCandidates = Array.from(new Map(candidates.map((order) => [String(order?.id || order?.number), order])).values());
+  if (!uniqueCandidates.length) return { order: null, method: '' };
+  if (!requestAt) return { order: uniqueCandidates[0], method };
+
+  const requestTime = new Date(requestAt).getTime();
+  if (Number.isNaN(requestTime)) return { order: uniqueCandidates[0], method };
+
+  const plausible = uniqueCandidates.filter((order) => !isOrderBeforePrealertRequest(requestAt, order?.created_at));
+  const pool = plausible.length ? plausible : uniqueCandidates;
+
+  const sorted = pool.slice().sort((left, right) => {
+    const leftTime = new Date(String(left?.created_at || 0)).getTime();
+    const rightTime = new Date(String(right?.created_at || 0)).getTime();
+
+    if (plausible.length) {
+      return Math.abs(leftTime - requestTime) - Math.abs(rightTime - requestTime);
+    }
+
+    return rightTime - leftTime;
+  });
+
+  return { order: sorted[0], method };
 };
 
 const diffDays = (start: string | null, end: string | null) => {
@@ -284,9 +484,11 @@ const isWithinBackofficeRange = (dateValue: string | null, range: string) => {
 const fetchAllOrderryOrders = async (): Promise<GenericOrder[]> => {
   const apiKey = process.env.ORDERRY_API_KEY;
   const baseUrl = process.env.ORDERRY_API_URL || 'https://api.orderry.com';
-  const maxPages = Number(process.env.BACKOFFICE_ORDERRY_MAX_PAGES || '4');
-  const maxTotalMs = Number(process.env.BACKOFFICE_ORDERRY_MAX_TOTAL_MS || '25000');
-  const perPageTimeoutMs = Number(process.env.BACKOFFICE_ORDERRY_PAGE_TIMEOUT_MS || '25000');
+  const maxPages = Number(process.env.BACKOFFICE_ORDERRY_MAX_PAGES || process.env.ORDERRY_ORDERS_MAX_PAGES || '4');
+  const maxTotalMs = Number(process.env.BACKOFFICE_ORDERRY_MAX_TOTAL_MS || '60000');
+  const perPageTimeoutMs = Number(
+    process.env.BACKOFFICE_ORDERRY_PAGE_TIMEOUT_MS || process.env.ORDERRY_ORDERS_PAGE_TIMEOUT_MS || '25000',
+  );
 
   if (!apiKey) return [];
 
@@ -331,32 +533,172 @@ const fetchAllOrderryOrders = async (): Promise<GenericOrder[]> => {
   return allOrders;
 };
 
-const buildOrderIndex = (orders: GenericOrder[]) => {
-  const index = new Map<string, GenericOrder>();
-
-  orders.forEach((order) => {
-    const keys = uniqueKeys([
-      order?.number,
-      order?.id,
-      order?.name,
-      order?.asset?.title,
-      order?.asset?.uid,
-      order?.asset?.serial,
-      order?.asset?.imei,
-      order?.serial_number,
-      order?.imei,
-      ...Object.values(order?.custom_fields || {}),
-    ]);
-
-    keys.forEach((key) => {
-      if (!index.has(key)) index.set(key, order);
-    });
-  });
-
-  return index;
+type PreparedOrder = {
+  order: GenericOrder;
+  orderId: string;
+  searchText: string;
+  agencyText: string;
+  brandModelText: string;
+  matchKeys: string[];
 };
 
-const findBestOrderMatch = (row: Record<string, any>, orderIndex: Map<string, GenericOrder>, orders: GenericOrder[]): MatchResult => {
+type OrderMatchContext = {
+  index: Map<string, GenericOrder>;
+  prepared: PreparedOrder[];
+  byOrderId: Map<string, PreparedOrder>;
+  tokenIndex: Map<string, Set<string>>;
+};
+
+const indexTokensForOrder = (tokenIndex: Map<string, Set<string>>, text: string, orderId: string) => {
+  for (const token of tokenizeText(text)) {
+    let bucket = tokenIndex.get(token);
+    if (!bucket) {
+      bucket = new Set<string>();
+      tokenIndex.set(token, bucket);
+    }
+    bucket.add(orderId);
+  }
+};
+
+const buildOrderMatchContext = (orders: GenericOrder[]): OrderMatchContext => {
+  const index = new Map<string, GenericOrder>();
+  const tokenIndex = new Map<string, Set<string>>();
+  const prepared: PreparedOrder[] = [];
+
+  for (const order of orders) {
+    const matchKeys = getOrderMatchKeys(order);
+    for (const key of matchKeys) {
+      if (!index.has(key)) index.set(key, order);
+    }
+
+    const orderId = String(order?.id || order?.number || '');
+    if (!orderId) continue;
+
+    const entry: PreparedOrder = {
+      order,
+      orderId,
+      searchText: getOrderSearchText(order),
+      agencyText: getOrderAgencyText(order),
+      brandModelText: getOrderBrandModelText(order),
+      matchKeys,
+    };
+    prepared.push(entry);
+    indexTokensForOrder(tokenIndex, entry.searchText, orderId);
+    indexTokensForOrder(tokenIndex, entry.agencyText, orderId);
+    indexTokensForOrder(tokenIndex, entry.brandModelText, orderId);
+  }
+
+  const byOrderId = new Map(prepared.map((entry) => [entry.orderId, entry]));
+  return { index, prepared, byOrderId, tokenIndex };
+};
+
+const shouldTryFlexibleMatch = (requestAt: string | null) => {
+  if (!requestAt) return true;
+  const requestDate = new Date(requestAt);
+  if (Number.isNaN(requestDate.getTime())) return true;
+  const ageDays = (Date.now() - requestDate.getTime()) / (1000 * 60 * 60 * 24);
+  return ageDays <= BACKOFFICE_FLEXIBLE_MATCH_MAX_AGE_DAYS;
+};
+
+const collectFlexibleCandidateIds = (
+  ctx: OrderMatchContext,
+  rowTokens: string[],
+  agencyTokens: string[],
+  productTokens: string[],
+  brandTokens: string[],
+  modelTokens: string[],
+  row: Record<string, unknown>,
+): Set<string> => {
+  const candidateIds = new Set<string>();
+  for (const token of [...rowTokens, ...agencyTokens, ...productTokens, ...brandTokens, ...modelTokens]) {
+    const bucket = ctx.tokenIndex.get(token);
+    if (bucket) bucket.forEach((id) => candidateIds.add(id));
+  }
+
+  return candidateIds;
+};
+
+const scoreFlexibleOrderMatch = (
+  row: Record<string, unknown>,
+  entry: PreparedOrder,
+  rowTokens: string[],
+  agencyTokens: string[],
+  productTokens: string[],
+  brandTokens: string[],
+  modelTokens: string[],
+): { score: number; method: string } => {
+  const order = entry.order;
+  const orderText = entry.searchText;
+  const agencyText = entry.agencyText;
+  const brandModelText = entry.brandModelText;
+  let score = 0;
+  let method = '';
+
+  if (row.serial && orderText.includes(normalizeText(row.serial))) {
+    score += 8;
+    method = 'Serie parcial';
+  }
+
+  if (row.imei && orderText.includes(normalizeText(row.imei))) {
+    score += 8;
+    method = method || 'IMEI parcial';
+  }
+
+  if (row.guide && orderText.includes(normalizeText(row.guide))) {
+    score += 7;
+    method = method || 'Guía parcial';
+  }
+
+  if (row.reference && orderText.includes(normalizeText(row.reference))) {
+    score += 7;
+    method = method || 'Referencia parcial';
+  }
+
+  const overlap = rowTokens.filter((token) => orderText.includes(token)).length;
+  if (overlap >= 2) {
+    score += overlap * 2;
+    method = method || 'Coincidencia por identificador';
+  }
+
+  const agencyOverlap = agencyTokens.filter((token) => agencyText.includes(token) || orderText.includes(token)).length;
+  const productOverlap = productTokens.filter((token) => brandModelText.includes(token) || orderText.includes(token)).length;
+  const brandOverlap = brandTokens.filter((token) => brandModelText.includes(token)).length;
+  const modelOverlap = modelTokens.filter((token) => brandModelText.includes(token)).length;
+
+  if (agencyOverlap >= 1 && brandOverlap >= 1 && modelOverlap >= 1) {
+    score += 12;
+    method = method || 'Agencia + Marca + Modelo';
+  } else if (agencyOverlap >= 1 && productOverlap >= 2) {
+    score += 9;
+    method = method || 'Agencia + Marca/Modelo';
+  } else if (agencyOverlap >= 1 && productOverlap >= 1) {
+    score += 5;
+    method = method || 'Agencia + Producto';
+  }
+
+  if (row.requestAt && order?.created_at) {
+    const requestTime = new Date(String(row.requestAt)).getTime();
+    const orderTime = new Date(String(order.created_at)).getTime();
+    if (!Number.isNaN(requestTime) && !Number.isNaN(orderTime)) {
+      if (isOrderBeforePrealertRequest(String(row.requestAt), order.created_at)) {
+        score -= 20;
+      } else {
+        const diffDays = Math.abs(orderTime - requestTime) / (1000 * 60 * 60 * 24);
+        if (orderTime >= requestTime && diffDays <= 3) score += 2;
+        else if (diffDays <= 7) score += 0.5;
+      }
+    }
+  }
+
+  return { score, method: method || 'Coincidencia flexible' };
+};
+
+const findBestOrderMatch = (
+  row: Record<string, unknown>,
+  ctx: OrderMatchContext,
+  options?: { allowFlexible?: boolean },
+): MatchResult => {
+  const allowFlexible = options?.allowFlexible !== false;
   const exactKeys = uniqueKeys([
     row.reference,
     row.orderNumber,
@@ -366,13 +708,20 @@ const findBestOrderMatch = (row: Record<string, any>, orderIndex: Map<string, Ge
   ]);
 
   for (const key of exactKeys) {
-    const exactMatch = orderIndex.get(key);
+    const exactMatch = ctx.index.get(key);
     if (exactMatch) {
       const method = key === normalizeKey(row.serial) || key === normalizeKey(row.imei)
         ? 'Serie/IMEI exacto'
         : 'Referencia exacta';
-      return { order: exactMatch, method };
+      const candidates = ctx.prepared
+        .filter((entry) => entry.matchKeys.includes(key))
+        .map((entry) => entry.order);
+      return pickOrderForPrealert(candidates.length ? candidates : [exactMatch], String(row.requestAt || ''), method);
     }
+  }
+
+  if (!allowFlexible || !shouldTryFlexibleMatch(row.requestAt ? String(row.requestAt) : null)) {
+    return { order: null, method: '' };
   }
 
   const identifierText = normalizeText([
@@ -384,11 +733,29 @@ const findBestOrderMatch = (row: Record<string, any>, orderIndex: Map<string, Ge
   ].join(' '));
 
   const rowTokens = tokenizeText(identifierText);
-  const agencyTokens = tokenizeText(row.customer || row.raw?.agencia || row.raw?.agency || '').slice(0, 4);
-  const productTokens = tokenizeText(row.equipmentName || row.details || row.raw?.modelos || '').slice(0, 6);
-  const brandTokens = tokenizeText(row.raw?.marcas || row.equipmentName || '').slice(0, 3);
-  const modelTokens = tokenizeText(row.raw?.modelos || row.equipmentName || '').slice(0, 4);
+  const rawRow = row.raw as Record<string, unknown> | undefined;
+  const agencyTokens = tokenizeText(
+    String(row.customer || rawRow?.agencia || rawRow?.agency || ''),
+  ).slice(0, 4);
+  const productTokens = tokenizeText(
+    String(row.equipmentName || row.details || rawRow?.modelos || ''),
+  ).slice(0, 6);
+  const brandTokens = tokenizeText(String(rawRow?.marcas || row.equipmentName || '')).slice(0, 3);
+  const modelTokens = tokenizeText(String(rawRow?.modelos || row.equipmentName || '')).slice(0, 4);
   if (!exactKeys.length && rowTokens.length < 2 && (agencyTokens.length < 1 || productTokens.length < 2)) {
+    return { order: null, method: '' };
+  }
+
+  const candidateIds = collectFlexibleCandidateIds(
+    ctx,
+    rowTokens,
+    agencyTokens,
+    productTokens,
+    brandTokens,
+    modelTokens,
+    row,
+  );
+  if (!candidateIds.size) {
     return { order: null, method: '' };
   }
 
@@ -396,73 +763,26 @@ const findBestOrderMatch = (row: Record<string, any>, orderIndex: Map<string, Ge
   let bestScore = 0;
   let bestMethod = '';
 
-  orders.forEach((order) => {
-    const orderText = getOrderSearchText(order);
-    const agencyText = getOrderAgencyText(order);
-    const brandModelText = getOrderBrandModelText(order);
-    let score = 0;
-    let method = '';
+  for (const orderId of candidateIds) {
+    const entry = ctx.byOrderId.get(orderId);
+    if (!entry) continue;
 
-    if (row.serial && orderText.includes(normalizeText(row.serial))) {
-      score += 8;
-      method = 'Serie parcial';
-    }
-
-    if (row.imei && orderText.includes(normalizeText(row.imei))) {
-      score += 8;
-      method = method || 'IMEI parcial';
-    }
-
-    if (row.guide && orderText.includes(normalizeText(row.guide))) {
-      score += 7;
-      method = method || 'Guía parcial';
-    }
-
-    if (row.reference && orderText.includes(normalizeText(row.reference))) {
-      score += 7;
-      method = method || 'Referencia parcial';
-    }
-
-    const overlap = rowTokens.filter((token) => orderText.includes(token)).length;
-    if (overlap >= 2) {
-      score += overlap * 2;
-      method = method || 'Coincidencia por identificador';
-    }
-
-    // Fallback tolerante cuando cliente escribe mal IMEI/serie/folio:
-    // cruza por agencia + marca/modelo del equipo.
-    const agencyOverlap = agencyTokens.filter((token) => agencyText.includes(token) || orderText.includes(token)).length;
-    const productOverlap = productTokens.filter((token) => brandModelText.includes(token) || orderText.includes(token)).length;
-    const brandOverlap = brandTokens.filter((token) => brandModelText.includes(token)).length;
-    const modelOverlap = modelTokens.filter((token) => brandModelText.includes(token)).length;
-
-    if (agencyOverlap >= 1 && brandOverlap >= 1 && modelOverlap >= 1) {
-      score += 12;
-      method = method || 'Agencia + Marca + Modelo';
-    } else if (agencyOverlap >= 1 && productOverlap >= 2) {
-      score += 9;
-      method = method || 'Agencia + Marca/Modelo';
-    } else if (agencyOverlap >= 1 && productOverlap >= 1) {
-      score += 5;
-      method = method || 'Agencia + Producto';
-    }
-
-    if (row.requestAt && order?.created_at) {
-      const requestTime = new Date(row.requestAt).getTime();
-      const orderTime = new Date(order.created_at).getTime();
-      if (!Number.isNaN(requestTime) && !Number.isNaN(orderTime)) {
-        const diffDays = Math.abs(orderTime - requestTime) / (1000 * 60 * 60 * 24);
-        if (diffDays <= 3) score += 1.5;
-        else if (diffDays <= 7) score += 0.5;
-      }
-    }
+    const { score, method } = scoreFlexibleOrderMatch(
+      row,
+      entry,
+      rowTokens,
+      agencyTokens,
+      productTokens,
+      brandTokens,
+      modelTokens,
+    );
 
     if (score > bestScore) {
       bestScore = score;
-      bestOrder = order;
-      bestMethod = method || 'Coincidencia flexible';
+      bestOrder = entry.order;
+      bestMethod = method;
     }
-  });
+  }
 
   if (bestOrder && bestScore >= 7) {
     return { order: bestOrder, method: bestMethod };
@@ -475,67 +795,87 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const range = (searchParams.get('range') || '7D').toUpperCase();
+    const forceRefresh = searchParams.get('refresh') === '1';
+    const cacheKey = range;
+    const now = Date.now();
+
+    if (!forceRefresh && backofficeResponseCache && backofficeResponseCache.key === cacheKey && backofficeResponseCache.expiresAt > now) {
+      return NextResponse.json(backofficeResponseCache.payload);
+    }
 
     let prealerts: Awaited<ReturnType<typeof getBackofficePrealertRows>> = [];
     let orders: GenericOrder[] = [];
     let warning = '';
     let source = 'none';
+    let sheetsConnected = false;
+    let sheetsLoaded = 0;
+    let sheetsTotalRows = 0;
+    let sheetErrors: string[] = [];
 
-    try {
-      prealerts = await getBackofficePrealertRowsFromGoogleSheets();
-      source = prealerts.length ? 'googlesheets+orderry' : 'googlesheets-only';
-    } catch (error: any) {
-      warning = error?.message || 'Google Sheets no disponible en este momento.';
+    const [sheetLoad, orderryOrders] = await Promise.all([
+      loadBackofficePrealertSheets(forceRefresh ? { force: true } : undefined),
+      fetchAllOrderryOrders().catch(() => [] as GenericOrder[]),
+    ]);
+
+    prealerts = sheetLoad.rows;
+    sheetsLoaded = sheetLoad.sheetsLoaded;
+    sheetsTotalRows = sheetLoad.rows.length;
+    sheetErrors = sheetLoad.sheetErrors;
+    sheetsConnected = sheetsTotalRows > 0;
+
+    if (sheetErrors.length) {
+      warning = sheetErrors.join(' · ');
+    }
+
+    if (sheetsConnected) {
+      source = 'googlesheets+orderry';
+      if (sheetsLoaded < 3) {
+        warning = warning
+          ? `${warning} · Solo ${sheetsLoaded}/3 pestañas cargadas.`
+          : `Solo ${sheetsLoaded}/3 pestañas de Google Sheets cargadas.`;
+      }
+    } else if (!warning) {
+      warning = 'No fue posible leer Google Sheets. Verifique que el documento sea público para export CSV.';
     }
 
     if (!prealerts.length) {
       try {
         prealerts = await getBackofficePrealertRows();
-        source = prealerts.length ? 'supabase+orderry' : source;
-      } catch (error: any) {
-        warning = warning || error?.message || 'Supabase no disponible en este momento.';
+        if (prealerts.length) {
+          source = 'supabase+orderry';
+          sheetsConnected = true;
+        }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Supabase no disponible en este momento.';
+        warning = warning || message;
       }
     }
 
-    try {
-      const timeout = new Promise<GenericOrder[]>((resolve) => {
-        setTimeout(() => resolve([]), 12000);
-      });
-      orders = await Promise.race([fetchAllOrderryOrders(), timeout]);
-      if (!orders.length) {
-        warning = warning || 'Orderry tardó demasiado; se muestran pre-alertas sin cruce completo.';
-      }
-    } catch {
-      warning = warning || 'No fue posible consultar Orderry; se muestran pre-alertas sin cruce completo.';
-      orders = [];
+    const orderryConfigured = Boolean(process.env.ORDERRY_API_KEY);
+    orders = orderryOrders;
+
+    if (!orders.length && orderryConfigured) {
+      warning = warning || 'Orderry respondió vacío; reintente en unos segundos o revise la API key.';
     }
 
-    const orderIndex = buildOrderIndex(orders);
+    const orderMatchContext = buildOrderMatchContext(orders);
 
-    const enrichedRows = prealerts.length
+    const enrichedRowsRaw: BackofficeEnrichedRow[] = prealerts.length
       ? prealerts.map((row) => {
-          const match = findBestOrderMatch(row, orderIndex, orders);
+          const match = findBestOrderMatch(row, orderMatchContext, {
+            allowFlexible: isWithinBackofficeRange(row.requestAt, range),
+          });
           const matchedOrder = match.order;
           const matchedOrderNumber = matchedOrder?.number || '';
-          const orderryAt = matchedOrder?.created_at || row.orderryAt || (matchedOrderNumber ? row.requestAt : null);
+          const orderryAt = matchedOrder?.created_at || row.orderryAt || null;
           const closedWonAt = getClosedWonAtFromOrder(matchedOrder);
-          const requestDate = row.requestAt ? new Date(row.requestAt) : null;
-          const orderryDate = orderryAt ? new Date(orderryAt) : null;
           const isHistoricalBeforeRequest = Boolean(
-            requestDate &&
-            orderryDate &&
-            !Number.isNaN(requestDate.getTime()) &&
-            !Number.isNaN(orderryDate.getTime()) &&
-            orderryDate.getTime() < requestDate.getTime() - 6 * 60 * 60 * 1000
+            matchedOrder && isOrderBeforePrealertRequest(row.requestAt, orderryAt)
           );
-
-          const hasOrderryEntry = Boolean((matchedOrderNumber || orderryAt) && !isHistoricalBeforeRequest);
-          const effectiveOrderryAt = hasOrderryEntry ? orderryAt : null;
-          const effectiveClosedWonAt = hasOrderryEntry ? closedWonAt : null;
-          const collectionHours = diffHours(row.requestAt, row.collectedAt);
-          const systemHours = diffHours(row.requestAt, effectiveOrderryAt);
-          const systemDays = diffDays(row.requestAt, effectiveOrderryAt);
-          const closedWonDays = diffDays(row.requestAt, effectiveClosedWonAt);
+          const hasAcceptedMatch = Boolean(matchedOrder && matchedOrderNumber && !isHistoricalBeforeRequest);
+          const systemHours = hasAcceptedMatch ? diffHours(row.requestAt, orderryAt) : null;
+          const systemDays = hasAcceptedMatch ? diffDays(row.requestAt, orderryAt) : null;
+          const closedWonDays = hasAcceptedMatch ? diffDays(row.requestAt, closedWonAt) : null;
 
           return {
             client: row.client,
@@ -545,34 +885,57 @@ export async function GET(request: Request) {
             customer: row.customer,
             equipmentName: row.equipmentName,
             requestAt: row.requestAt,
-            collectedAt: row.collectedAt,
-            orderryAt: effectiveOrderryAt,
-            closedWonAt: effectiveClosedWonAt,
-            matchedOrderNumber: hasOrderryEntry ? matchedOrderNumber : '',
-            matchMethod: hasOrderryEntry
-              ? (match.method || 'Aceptado en Orderry')
+            collectedAt: null,
+            orderryAt: matchedOrder ? orderryAt : null,
+            closedWonAt: hasAcceptedMatch ? closedWonAt : null,
+            matchedOrderNumber: matchedOrder ? matchedOrderNumber : '',
+            matchedOrderId: matchedOrder?.id ? String(matchedOrder.id) : '',
+            matchMethod: !matchedOrder
+              ? 'Sin orden en Orderry'
               : isHistoricalBeforeRequest
                 ? 'Coincidencia histórica (posible reingreso)'
-                : 'Sin orden en Orderry',
-            collectionHours,
+                : (match.method || 'Aceptado en Orderry'),
+            collectionHours: null,
             systemHours,
             systemDays,
             closedWonDays,
             historicalDetected: isHistoricalBeforeRequest,
-            status: hasOrderryEntry
+            status: hasAcceptedMatch
               ? 'Aceptado'
-              : row.requestAt
-                ? 'Pendiente ingreso'
-                : 'Pendiente',
+              : isHistoricalBeforeRequest
+                ? 'Coincidencia histórica'
+                : row.requestAt
+                  ? 'Pendiente ingreso'
+                  : 'Pendiente',
           };
         })
       : buildFallbackRowsFromOrders(orders);
 
-    const scopedRows = enrichedRows.filter((row) => isWithinBackofficeRange(row.requestAt || row.orderryAt, range));
+    const recoleccionResult = await attachRecoleccionFromHistorial(enrichedRowsRaw);
+    if (recoleccionResult.warning) {
+      warning = warning ? `${warning} · ${recoleccionResult.warning}` : recoleccionResult.warning;
+    }
+    const enrichedRows = recoleccionResult.rows.map(stripInternalBackofficeFields);
+
+    const isPostOrderryRow = (row: BackofficePublicRow) =>
+      isOnOrAfterOrderryCutover(row.requestAt || row.orderryAt);
+
+    const scopedRows = enrichedRows.filter(
+      (row) => isPostOrderryRow(row) && isWithinBackofficeRange(row.requestAt || row.orderryAt, range),
+    );
+    const pendingRows = enrichedRows.filter(
+      (row) => isPendingIngresoStatus(row.status) && isPostOrderryRow(row),
+    );
+
+    if (sheetsTotalRows > 0 && scopedRows.length === 0) {
+      warning = warning
+        ? `${warning} · Hay ${sheetsTotalRows} pre-alertas en Sheets, pero ninguna cae en el rango ${range}.`
+        : `Hay ${sheetsTotalRows} pre-alertas en Google Sheets, pero ninguna cae en el rango ${range}. Cambie el filtro de fechas del dashboard.`;
+    }
 
     const summary = {
       totalRequests: scopedRows.length,
-      matchedToOrderry: scopedRows.filter((row) => Boolean(row.orderryAt)).length,
+      matchedToOrderry: scopedRows.filter((row) => Boolean(row.orderryAt) && !row.historicalDetected).length,
       avgCollectionHours: avg(scopedRows.map((row) => row.collectionHours)),
       avgSystemEntryHours: avg(scopedRows.map((row) => row.systemHours)),
       within24hRate: scopedRows.filter((row) => row.systemHours !== null).length
@@ -582,23 +945,35 @@ export async function GET(request: Request) {
               100
           )
         : 0,
-      pendingCollection: scopedRows.filter((row) => !row.orderryAt).length,
+      /** Pendientes sin ingreso a Orderry desde go-live (excluye pre-alertas del sistema anterior). */
+      pendingIngreso: pendingRows.length,
+      pendingCollection: pendingRows.length,
     };
 
     const breakdown = ['CLARO', 'XIAOMI', 'RETAILER'].map((client) => {
       const clientRows = scopedRows.filter((row) => row.client === client);
+      const clientPending = pendingRows.filter((row) => row.client === client);
       return {
         client,
         total: clientRows.length,
-        matchedToOrderry: clientRows.filter((row) => Boolean(row.orderryAt)).length,
+        pendingIngreso: clientPending.length,
+        matchedToOrderry: clientRows.filter((row) => Boolean(row.orderryAt) && !row.historicalDetected).length,
         avgCollectionHours: avg(clientRows.map((row) => row.collectionHours)),
         avgSystemEntryHours: avg(clientRows.map((row) => row.systemHours)),
       };
     });
 
-    return NextResponse.json({
-      connected: orders.length > 0 || enrichedRows.length > 0,
-      source: prealerts.length ? (source === 'none' ? 'sheets+orderry' : source) : orders.length > 0 ? 'orderry-only' : 'none',
+    const payload: BackofficeApiPayload = {
+      connected: sheetsConnected,
+      sheetsConnected,
+      sheetsLoaded,
+      sheetsTotalRows,
+      sheetErrors,
+      orderryConfigured,
+      orderryMatched: orders.length > 0,
+      source: prealerts.length ? source : orders.length > 0 ? 'orderry-only' : 'none',
+      orderryCutoverDate: getOrderryCutoverDateIso(),
+      orderryCutoverLabel: formatOrderryCutoverLabel(),
       warning,
       summary,
       breakdown,
@@ -610,18 +985,34 @@ export async function GET(request: Request) {
           return new Date(b.requestAt || 0).getTime() - new Date(a.requestAt || 0).getTime();
         })
         .slice(0, 50),
-    });
+    };
+
+    backofficeResponseCache = {
+      key: cacheKey,
+      expiresAt: Date.now() + BACKOFFICE_RESPONSE_CACHE_TTL_MS,
+      payload,
+    };
+
+    return NextResponse.json(payload);
   } catch (error: any) {
     return NextResponse.json({
       connected: false,
+      sheetsConnected: false,
+      sheetsLoaded: 0,
+      sheetsTotalRows: 0,
+      orderryConfigured: Boolean(process.env.ORDERRY_API_KEY),
+      orderryMatched: false,
       source: 'none',
-      error: error?.message || 'No fue posible conectar Backoffice con Orderry.',
+      orderryCutoverDate: getOrderryCutoverDateIso(),
+      orderryCutoverLabel: formatOrderryCutoverLabel(),
+      error: error?.message || 'No fue posible leer las pre-alertas desde Google Sheets.',
       summary: {
         totalRequests: 0,
         matchedToOrderry: 0,
         avgCollectionHours: null,
         avgSystemEntryHours: null,
         within24hRate: 0,
+        pendingIngreso: 0,
         pendingCollection: 0,
       },
       breakdown: [],
