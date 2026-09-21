@@ -19,7 +19,9 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const ALL_ROLES = ['admin', 'supervisor', 'despacho', 'viewer'] as const;
-const ALL_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'ERP Xiaomi', 'Bono Técnico', 'Despacho'] as const;
+import { APP_AREAS } from '@/lib/auth-areas';
+
+const ALL_AREAS = APP_AREAS;
 
 export default function AdminAreasClient({ initialAccess }: { initialAccess: AccessRow[] }) {
   const router = useRouter();

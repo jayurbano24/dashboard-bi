@@ -1,8 +1,9 @@
 import { createClient } from '@/lib/supabase/server';
 import { NextResponse } from 'next/server';
+import { APP_AREAS, normalizeAppAreas, type AppArea } from '@/lib/auth-areas';
+import { getSupabaseAdmin } from '@/lib/supabase-admin';
 
 const VALID_ROLES = ['admin', 'supervisor', 'despacho', 'viewer'] as const;
-const VALID_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'ERP Xiaomi', 'Bono Técnico', 'Despacho'] as const;
 
 type AdminCheckResult =
   | { error: string; status: number; supabase?: never }
@@ -35,7 +36,7 @@ export async function GET() {
 
   return NextResponse.json({
     roles: VALID_ROLES,
-    areas: VALID_AREAS,
+    areas: APP_AREAS,
     access: data ?? [],
   });
 }
@@ -44,7 +45,6 @@ export async function PATCH(request: Request) {
   const check = await assertAdmin();
   if (check.error !== null) return NextResponse.json({ error: check.error }, { status: check.status });
 
-  const supabase = check.supabase;
   const body = await request.json();
   const role = typeof body?.role === 'string' ? body.role : '';
   const areas = Array.isArray(body?.areas)
@@ -59,24 +59,32 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: 'El rol admin siempre tiene acceso a todas las áreas' }, { status: 400 });
   }
 
-  const normalizedAreas = [...new Set(areas)].filter((area): area is (typeof VALID_AREAS)[number] =>
-    VALID_AREAS.includes(area as (typeof VALID_AREAS)[number])
-  );
+  const normalizedAreas = normalizeAppAreas(areas);
+  const admin = getSupabaseAdmin();
 
-  const { error: deleteError } = await supabase
-    .from('role_area_access')
-    .delete()
-    .eq('role', role);
+  const { error: deleteError } = await admin.from('role_area_access').delete().eq('role', role);
 
   if (deleteError) return NextResponse.json({ error: deleteError.message }, { status: 500 });
 
   if (normalizedAreas.length > 0) {
-    const payload = normalizedAreas.map((area: (typeof VALID_AREAS)[number]) => ({ role, area }));
-    const { error: insertError } = await supabase
-      .from('role_area_access')
-      .insert(payload);
+    const payload = normalizedAreas.map((area: AppArea) => ({ role, area }));
+    const { error: insertError } = await admin.from('role_area_access').insert(payload);
 
     if (insertError) return NextResponse.json({ error: insertError.message }, { status: 500 });
+  }
+
+  const { data: roleUsers } = await admin.from('user_roles').select('user_id').eq('role', role);
+  const userIds = (roleUsers ?? []).map((row) => row.user_id).filter(Boolean);
+
+  if (userIds.length > 0) {
+    const { error: profileSyncError } = await admin
+      .from('user_profiles')
+      .update({ areas: normalizedAreas })
+      .in('user_id', userIds);
+
+    if (profileSyncError) {
+      return NextResponse.json({ error: profileSyncError.message }, { status: 500 });
+    }
   }
 
   return NextResponse.json({ ok: true, role, areas: normalizedAreas });

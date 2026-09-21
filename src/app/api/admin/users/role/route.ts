@@ -1,9 +1,8 @@
 import { createClient } from '@/lib/supabase/server';
 import { NextResponse } from 'next/server';
+import { APP_AREAS, isAppArea, normalizeAppAreas, type AppArea } from '@/lib/auth-areas';
+import { getSupabaseAdmin } from '@/lib/supabase-admin';
 
-const VALID_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'ERP Xiaomi', 'Bono Técnico', 'Despacho'] as const;
-
-// Verifica que quien llama es admin
 async function assertAdmin() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -16,7 +15,6 @@ async function assertAdmin() {
   return { error: null, status: 200 };
 }
 
-// PATCH /api/admin/users/role — cambiar rol
 export async function PATCH(request: Request) {
   const check = await assertAdmin();
   if (check.error) return NextResponse.json({ error: check.error }, { status: check.status });
@@ -29,43 +27,47 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: 'Parámetros inválidos' }, { status: 400 });
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from('user_roles')
-    .upsert({ user_id, role }, { onConflict: 'user_id' });
+  const admin = getSupabaseAdmin();
+  const { error } = await admin.from('user_roles').upsert({ user_id, role }, { onConflict: 'user_id' });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('[admin/users/role PATCH]', error);
+    return NextResponse.json({ error: 'No se pudo actualizar el rol.' }, { status: 500 });
+  }
 
-  const nextAreas = role === 'admin'
-    ? [...VALID_AREAS]
-    : ((await supabase.from('role_area_access').select('area').eq('role', role)).data ?? [])
-        .map((row: { area: string }) => row.area)
-        .filter((area): area is (typeof VALID_AREAS)[number] => VALID_AREAS.includes(area as (typeof VALID_AREAS)[number]));
+  const nextAreas: AppArea[] =
+    role === 'admin'
+      ? [...APP_AREAS]
+      : normalizeAppAreas(
+          ((await admin.from('role_area_access').select('area').eq('role', role)).data ?? [])
+            .map((row: { area: string }) => row.area)
+            .filter(isAppArea),
+        );
 
-  const { data: existingProfile } = await supabase
+  const { data: existingProfile } = await admin
     .from('user_profiles')
     .select('first_name, last_name')
     .eq('user_id', user_id)
     .maybeSingle();
 
-  const { error: profileError } = await supabase
-    .from('user_profiles')
-    .upsert(
-      {
-        user_id,
-        first_name: existingProfile?.first_name ?? '',
-        last_name: existingProfile?.last_name ?? '',
-        areas: nextAreas,
-      },
-      { onConflict: 'user_id' }
-    );
+  const { error: profileError } = await admin.from('user_profiles').upsert(
+    {
+      user_id,
+      first_name: existingProfile?.first_name ?? '',
+      last_name: existingProfile?.last_name ?? '',
+      areas: nextAreas,
+    },
+    { onConflict: 'user_id' },
+  );
 
-  if (profileError) return NextResponse.json({ error: profileError.message }, { status: 500 });
+  if (profileError) {
+    console.error('[admin/users/role PATCH profile]', profileError);
+    return NextResponse.json({ error: 'No se pudo sincronizar el perfil del usuario.' }, { status: 500 });
+  }
 
   return NextResponse.json({ ok: true });
 }
 
-// DELETE /api/admin/users/role — eliminar acceso
 export async function DELETE(request: Request) {
   const check = await assertAdmin();
   if (check.error) return NextResponse.json({ error: check.error }, { status: check.status });
@@ -74,12 +76,13 @@ export async function DELETE(request: Request) {
   const { user_id } = body ?? {};
   if (!user_id) return NextResponse.json({ error: 'user_id requerido' }, { status: 400 });
 
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from('user_roles')
-    .delete()
-    .eq('user_id', user_id);
+  const admin = getSupabaseAdmin();
+  const { error } = await admin.from('user_roles').delete().eq('user_id', user_id);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('[admin/users/role DELETE]', error);
+    return NextResponse.json({ error: 'No se pudo eliminar el acceso.' }, { status: 500 });
+  }
+
   return NextResponse.json({ ok: true });
 }

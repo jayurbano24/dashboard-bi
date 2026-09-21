@@ -4,7 +4,9 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 
-const AREA_OPTIONS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'ERP Xiaomi', 'Bono Técnico', 'Despacho'];
+import { APP_AREAS } from '@/lib/auth-areas';
+
+const AREA_OPTIONS = [...APP_AREAS];
 
 function LoginPageContent() {
   const router = useRouter();

@@ -6159,22 +6159,22 @@ export default function DashboardMultimodular() {
 
       <div className="mb-4 flex justify-end gap-2">
         {(canSeeAllAreas || canSeeArea('Despacho')) && (
-          <>
-            <a
-              href="/despacho"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
-            >
-              <Truck className="w-3.5 h-3.5" />
-              Módulo de Despacho
-            </a>
-            <a
-              href="/separacion-sap"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-100 transition-colors"
-            >
-              <Package className="w-3.5 h-3.5" />
-              Separación SAP
-            </a>
-          </>
+          <a
+            href="/despacho"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+          >
+            <Truck className="w-3.5 h-3.5" />
+            Módulo de Despacho
+          </a>
+        )}
+        {(canSeeAllAreas || canSeeAnyArea('Separación SAP', 'Despacho')) && (
+          <a
+            href="/separacion-sap"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-100 transition-colors"
+          >
+            <Package className="w-3.5 h-3.5" />
+            Separación SAP
+          </a>
         )}
       </div>
 

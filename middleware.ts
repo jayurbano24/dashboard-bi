@@ -87,11 +87,23 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // /despacho y /separacion-sap: admin, rol con ruta permitida, O área "Despacho" asignada
-  if (pathname.startsWith('/despacho') || pathname.startsWith('/separacion-sap')) {
+  if (pathname.startsWith('/despacho')) {
     const allowedByRole = canAccess(role, pathname);
     const allowedByArea = hasArea(accessibleAreas, 'Despacho');
     if (role === 'admin' || allowedByRole || allowedByArea) {
+      supabaseResponse.headers.set('x-user-role', role);
+      return supabaseResponse;
+    }
+    const url = request.nextUrl.clone();
+    url.pathname = '/no-access';
+    return NextResponse.redirect(url);
+  }
+
+  if (pathname.startsWith('/separacion-sap')) {
+    const allowedByRole = canAccess(role, pathname);
+    const allowedBySapArea = hasArea(accessibleAreas, 'Separación SAP');
+    const allowedByDespachoArea = hasArea(accessibleAreas, 'Despacho');
+    if (role === 'admin' || allowedByRole || allowedBySapArea || allowedByDespachoArea) {
       supabaseResponse.headers.set('x-user-role', role);
       return supabaseResponse;
     }

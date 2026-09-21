@@ -1,9 +1,9 @@
 import { createClient } from '@/lib/supabase/server';
 import { createClient as createAdminClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { APP_AREAS, isAppArea, normalizeAppAreas, type AppArea } from '@/lib/auth-areas';
 
 const VALID_ROLES = ['admin', 'supervisor', 'despacho', 'viewer'] as const;
-const VALID_AREAS = ['Gerencial', 'Backoffice', 'Taller', 'Bodega', 'Calidad', 'ERP Xiaomi', 'Bono Técnico', 'Despacho'] as const;
 
 async function assertAdmin() {
   const supabase = await createClient();
@@ -83,9 +83,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: roleError.message }, { status: 500 });
   }
 
-  let profileAreas = [...new Set(areasFromBody)].filter((area): area is (typeof VALID_AREAS)[number] =>
-    VALID_AREAS.includes(area as (typeof VALID_AREAS)[number])
-  );
+  let profileAreas: AppArea[] = normalizeAppAreas(areasFromBody);
 
   if (profileAreas.length === 0 && role !== 'admin') {
     const { data: defaultAccess } = await adminClient
@@ -93,13 +91,13 @@ export async function POST(request: Request) {
       .select('area')
       .eq('role', role);
 
-    profileAreas = (defaultAccess ?? [])
-      .map((row: { area: string }) => row.area)
-      .filter((area): area is (typeof VALID_AREAS)[number] => VALID_AREAS.includes(area as (typeof VALID_AREAS)[number]));
+    profileAreas = normalizeAppAreas(
+      (defaultAccess ?? []).map((row: { area: string }) => row.area),
+    );
   }
 
   if (profileAreas.length === 0 && role === 'admin') {
-    profileAreas = [...VALID_AREAS];
+    profileAreas = [...APP_AREAS];
   }
 
   const { error: profileError } = await adminClient
