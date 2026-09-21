@@ -8,7 +8,19 @@ export {
   type SeriePendienteBodega,
 } from './inventario-bodega';
 export { parseSapArchivo } from './sap-excel-parser';
-export { contarEquiposPorCentro, inventarioSapCargado } from './sap-inventory';
+export {
+  CENTROS_INVENTARIO_SAP,
+  contarEquiposPorCentro,
+  inventarioSapCargado,
+  materialesCantidadPorAlmacen,
+  resumenInventarioPorBodega,
+  type MaterialCantidadAlmacen,
+  type ResumenInventarioBodega,
+} from './sap-inventory';
+export {
+  exportarMaterialesPorAlmacenBodega,
+  exportarMaterialesPorAlmacenTodasBodegas,
+} from './materiales-por-almacen-excel';
 export {
   buildSeriesPendientesExcelBuffer,
   descargarSeriesPendientesExcel,

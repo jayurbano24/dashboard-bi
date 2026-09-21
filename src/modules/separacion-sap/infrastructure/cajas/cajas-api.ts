@@ -67,6 +67,16 @@ export async function actualizarSubgruposCajaSeparacionSap(
   return parseJson(response);
 }
 
+export async function eliminarSubgrupoCajaSeparacionSap(
+  cajaId: string,
+  subgrupoId: string,
+): Promise<{ ok: true; caja: CajaEntidad }> {
+  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}/subgrupos/${subgrupoId}`, {
+    method: 'DELETE',
+  });
+  return parseJson(response);
+}
+
 export async function fetchCentrosSap(): Promise<{ ok: true; centros: string[] }> {
   const response = await fetch('/api/separacion-sap/centros', { cache: 'no-store' });
   return parseJson(response);

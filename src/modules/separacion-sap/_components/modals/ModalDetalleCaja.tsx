@@ -1,22 +1,54 @@
 'use client';
 
-import { Boxes, Printer, X } from 'lucide-react';
+import { useState } from 'react';
+import { Boxes, Printer, Trash2, X } from 'lucide-react';
+import { useSeparacionSap } from '../../application/context';
 import { capturasPorSubgrupo, totalesCaja } from '../../domain/cajas/caja-utils';
 import { TIPOS_PRODUCTO } from '../../domain/shared/constants';
+import { eliminarSubgrupoCajaSeparacionSap } from '../../infrastructure/cajas/cajas-api';
 import type { CajaEntidad } from '../../types';
-import { CentroBadge, EstadoBadge } from '../badges';
+import { CentroBadge, EstadoBadge, SubgrupoEstadoBadge } from '../badges';
 
 type ModalDetalleCajaProps = {
   caja: CajaEntidad;
   onClose: () => void;
 };
 
-export function ModalDetalleCaja({ caja, onClose }: ModalDetalleCajaProps) {
+export function ModalDetalleCaja({ caja: cajaInicial, onClose }: ModalDetalleCajaProps) {
+  const { state, dispatch } = useSeparacionSap();
+  const caja = state.cajas.find((c) => c.id === cajaInicial.id) ?? cajaInicial;
+  const [eliminandoSubgrupoId, setEliminandoSubgrupoId] = useState<string | null>(null);
+
   const { cantidadEsperada, cantidadCapturada } = totalesCaja(caja);
   const pct = cantidadEsperada > 0 ? Math.round((cantidadCapturada / cantidadEsperada) * 100) : 0;
+  const abierta = caja.estado === 'ABIERTA';
 
   function imprimirDetalle() {
     if (typeof window !== 'undefined') window.print();
+  }
+
+  async function handleEliminarSubgrupo(subgrupoId: string, materialCodigo: string, capturadas: number) {
+    const mensaje =
+      capturadas > 0
+        ? `¿Eliminar sub-grupo ${materialCodigo} y sus ${capturadas} captura(s)? Las series quedarán libres.`
+        : `¿Eliminar sub-grupo ${materialCodigo}?`;
+    if (!window.confirm(mensaje)) return;
+
+    setEliminandoSubgrupoId(subgrupoId);
+    try {
+      const { caja: cajaActualizada } = await eliminarSubgrupoCajaSeparacionSap(caja.id, subgrupoId);
+      dispatch({
+        type: 'ACTUALIZAR_CAJA',
+        payload: { caja: cajaActualizada, notificacion: `Sub-Grupo ${materialCodigo} eliminado.` },
+      });
+    } catch (err) {
+      dispatch({
+        type: 'SET_ERROR_GLOBAL',
+        payload: err instanceof Error ? err.message : 'No se pudo eliminar el sub-grupo.',
+      });
+    } finally {
+      setEliminandoSubgrupoId(null);
+    }
   }
 
   return (
@@ -33,7 +65,10 @@ export function ModalDetalleCaja({ caja, onClose }: ModalDetalleCajaProps) {
                 <CentroBadge centro={caja.centro} />
                 <EstadoBadge estado={caja.estado} />
               </div>
-              <p className="text-xs text-slate-500">{caja.subgrupos.length} Sub-Grupo(s) · multiusuario Supabase</p>
+              <p className="text-xs text-slate-500">
+                {caja.subgrupos.length} Sub-Grupo(s)
+                {abierta ? ' · puede eliminar sub-grupos individualmente' : ''}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -76,30 +111,55 @@ export function ModalDetalleCaja({ caja, onClose }: ModalDetalleCajaProps) {
                     <th className="px-3 py-2">Tipo</th>
                     <th className="px-3 py-2">Material</th>
                     <th className="px-3 py-2 text-center">Progreso</th>
-                    <th className="px-3 py-2">Regla</th>
+                    <th className="px-3 py-2">Estado</th>
+                    {abierta && <th className="px-3 py-2 text-right">Acc.</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {caja.subgrupos.map((sg) => (
-                    <tr key={sg.id}>
-                      <td className="px-3 py-2 font-medium">
-                        {sg.marca} {sg.modelo}
-                      </td>
-                      <td className="px-3 py-2">{TIPOS_PRODUCTO[sg.tipoProducto]?.label}</td>
-                      <td className="px-3 py-2 font-mono text-teal-800">
-                        {sg.materialCodigo}
-                        <span className="block text-[10px] text-slate-500 font-sans truncate max-w-[200px]">
-                          {sg.materialTexto}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-center font-mono font-bold">
-                        {capturasPorSubgrupo(caja, sg.id)} / {sg.cantidadEsperada}
-                      </td>
-                      <td className="px-3 py-2 text-[10px]">
-                        {sg.longitudDigitos} díg · {sg.esquemaSeries === 'S1_S2' ? 'S1+S2' : 'S1'}
+                  {caja.subgrupos.length === 0 ? (
+                    <tr>
+                      <td colSpan={abierta ? 6 : 5} className="px-3 py-4 text-center text-slate-400 italic">
+                        Sin sub-grupos
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    caja.subgrupos.map((sg) => {
+                      const capturadas = capturasPorSubgrupo(caja, sg.id);
+                      return (
+                        <tr key={sg.id}>
+                          <td className="px-3 py-2 font-medium">
+                            {sg.marca} {sg.modelo}
+                          </td>
+                          <td className="px-3 py-2">{TIPOS_PRODUCTO[sg.tipoProducto]?.label}</td>
+                          <td className="px-3 py-2 font-mono text-teal-800">
+                            {sg.materialCodigo}
+                            <span className="block text-[10px] text-slate-500 font-sans truncate max-w-[200px]">
+                              {sg.materialTexto}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-center font-mono font-bold">
+                            {capturadas} / {sg.cantidadEsperada}
+                          </td>
+                          <td className="px-3 py-2">
+                            <SubgrupoEstadoBadge estado={sg.estado} />
+                          </td>
+                          {abierta && (
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                type="button"
+                                onClick={() => void handleEliminarSubgrupo(sg.id, sg.materialCodigo, capturadas)}
+                                disabled={eliminandoSubgrupoId === sg.id}
+                                className="p-1 text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded disabled:opacity-50"
+                                title="Eliminar sub-grupo"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>

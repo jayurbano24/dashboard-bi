@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
+import { resolveCreatorDisplayName } from '@/lib/user-display-name';
 import { loadCajasCompletasFromDb } from '@/app/api/separacion-sap/cajas/_lib/load-cajas';
 import type { CrearSubgrupoInput } from '@/modules/separacion-sap/types';
 
@@ -68,6 +69,8 @@ export async function POST(request: Request) {
     const cantidadTotal = subgrupos.reduce((sum, sg) => sum + sg.cantidadEsperada, 0);
     const cajaVacia = subgrupos.length === 0;
 
+    const creatorName = await resolveCreatorDisplayName(admin, user);
+
     const cajaRow = {
       numero_caja: numeroCaja,
       centro: body.centro.trim().toUpperCase(),
@@ -84,7 +87,7 @@ export async function POST(request: Request) {
       longitud_digitos: cajaVacia ? 15 : primerSg.longitudDigitos || 15,
       esquema_series: cajaVacia ? 'S1' : primerSg.esquemaSeries || 'S1',
       observaciones: body.observaciones?.trim() || '',
-      created_by: user.email ?? user.id,
+      created_by: creatorName,
     };
 
     let insertResult = await admin.from('separacion_sap_cajas').insert(cajaRow).select('*').single();

@@ -6,6 +6,7 @@ import {
   type SubgrupoRow,
 } from '@/modules/separacion-sap/infrastructure/cajas/cajas-mapper';
 import type { CajaEntidad, EsquemaSeries, TipoProductoId } from '@/modules/separacion-sap/types';
+import { applyCreatorLabelMap, resolveCreatorLabelMap } from '@/lib/user-display-name';
 
 type CajaRowDb = CajaRow & {
   marca: string;
@@ -88,11 +89,17 @@ export async function loadCajasCompletasFromDb(admin: ReturnType<typeof getSupab
     return assembleCaja(cajaRow, subgrupos, capturasByCaja.get(cajaRow.id) ?? []);
   });
 
+  const creatorLabelMap = await resolveCreatorLabelMap(
+    admin,
+    assembled.map((c) => c.createdBy),
+  );
+  const cajasConCreador = applyCreatorLabelMap(assembled, creatorLabelMap);
+
   let maxSeq = 0;
-  for (const c of assembled) {
+  for (const c of cajasConCreador) {
     const match = c.numeroCaja.match(/CAJA-(\d+)/);
     if (match) maxSeq = Math.max(maxSeq, Number.parseInt(match[1], 10));
   }
 
-  return { cajas: assembled, secuenciaCaja: maxSeq + 1 };
+  return { cajas: cajasConCreador, secuenciaCaja: maxSeq + 1 };
 }

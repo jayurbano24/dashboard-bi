@@ -40,6 +40,11 @@ export class SAPService {
     return this.historyService.listByImei(imei);
   }
 
+  async findExistingEquipoByImei(imei: string) {
+    const rows = await this.equipmentRepo.findByImeis([imei.trim()]);
+    return rows[0] ?? null;
+  }
+
   getHistoryByLote(loteId: string) {
     return this.historyService.listByLote(loteId);
   }

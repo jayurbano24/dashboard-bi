@@ -1,9 +1,24 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Building2, ChevronLeft, ChevronRight, Filter, Plus, Trash2 } from 'lucide-react';
+import {
+  AlertCircle,
+  Building2,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  Layers,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide-react';
 import { useSeparacionSap } from '../../application/context';
-import { resumenMaterialesCaja, resumenSubgruposCaja, totalesCaja } from '../../domain/cajas/caja-utils';
+import {
+  detalleCantidadesSubgrupos,
+  resumenMaterialesCaja,
+  resumenSubgruposCaja,
+  totalesCaja,
+} from '../../domain/cajas/caja-utils';
 import {
   aplicarFiltrosColumnaCajas,
   CAJAS_POR_PAGINA,
@@ -26,6 +41,7 @@ import { CentroBadge, EstadoBadge } from '../badges';
 import { ColumnHeaderFilter } from '../molecules/ColumnHeaderFilter';
 import { ModalCrearCaja } from '../modals/ModalCrearCaja';
 import { ModalDetalleCaja } from '../modals/ModalDetalleCaja';
+import { ModalEditarSubgruposCaja } from '../modals/ModalEditarSubgruposCaja';
 
 type VistaCajasListadoProps = {
   onSeleccionarCaja: (cajaId: string) => void;
@@ -41,6 +57,8 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
   const [filtrosColumna, setFiltrosColumna] = useState<FiltrosColumnaCajas>(filtrosColumnaVacios);
   const [pagina, setPagina] = useState(1);
   const [cajaParaDetalle, setCajaParaDetalle] = useState<CajaEntidad | null>(null);
+  const [cajaParaEditarSubgrupos, setCajaParaEditarSubgrupos] = useState<CajaEntidad | null>(null);
+  const [editarSubgruposSoloLectura, setEditarSubgruposSoloLectura] = useState(false);
   const [eliminandoId, setEliminandoId] = useState<string | null>(null);
   const [canDeleteClosedCajas, setCanDeleteClosedCajas] = useState(false);
 
@@ -295,7 +313,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
             </colgroup>
             <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 whitespace-nowrap">
+                <th className="px-2 py-1.5 whitespace-nowrap">
                   <ColumnHeaderFilter
                     label="Número Caja"
                     options={opcionesUnicasColumna(cajasBase, 'numeroCaja')}
@@ -303,7 +321,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('numeroCaja', v)}
                   />
                 </th>
-                <th className="px-4 py-3 whitespace-nowrap">
+                <th className="px-2 py-1.5 whitespace-nowrap">
                   <ColumnHeaderFilter
                     label="Fecha creación"
                     options={opcionesUnicasColumna(cajasBase, 'fechaCreacion')}
@@ -311,7 +329,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('fechaCreacion', v)}
                   />
                 </th>
-                <th className="px-4 py-3 whitespace-nowrap">
+                <th className="px-2 py-1.5 whitespace-nowrap">
                   <ColumnHeaderFilter
                     label="Creado por"
                     options={opcionesUnicasColumna(cajasBase, 'creadoPor')}
@@ -319,7 +337,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('creadoPor', v)}
                   />
                 </th>
-                <th className="px-4 py-3">
+                <th className="px-2 py-1.5">
                   <ColumnHeaderFilter
                     label="Bodega"
                     options={opcionesUnicasColumna(cajasBase, 'centro')}
@@ -327,8 +345,8 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('centro', v)}
                   />
                 </th>
-                <th className="px-4 py-3 text-center">Sub-Gr.</th>
-                <th className="px-4 py-3">
+                <th className="px-2 py-1.5 text-center">Sub-Gr.</th>
+                <th className="px-2 py-1.5">
                   <ColumnHeaderFilter
                     label="Marca / Modelo"
                     options={opcionesUnicasColumna(cajasBase, 'marcaModelo')}
@@ -336,7 +354,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('marcaModelo', v)}
                   />
                 </th>
-                <th className="px-4 py-3">
+                <th className="px-2 py-1.5">
                   <ColumnHeaderFilter
                     label="Material SAP"
                     options={opcionesUnicasColumna(cajasBase, 'materialSap')}
@@ -344,8 +362,8 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('materialSap', v)}
                   />
                 </th>
-                <th className="px-4 py-3 text-center">Progreso</th>
-                <th className="px-4 py-3">
+                <th className="px-2 py-1.5 text-center">Progreso</th>
+                <th className="px-2 py-1.5">
                   <ColumnHeaderFilter
                     label="Estado"
                     options={opcionesUnicasColumna(cajasBase, 'estado')}
@@ -353,7 +371,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('estado', v)}
                   />
                 </th>
-                <th className="px-4 py-3 text-right">Acciones</th>
+                <th className="px-2 py-2 text-right whitespace-nowrap">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -386,7 +404,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     >
                       <td
                         onClick={() => onSeleccionarCaja(c.id)}
-                        className="px-4 py-3 font-mono font-bold text-teal-800 cursor-pointer hover:underline whitespace-nowrap"
+                        className="px-2 py-1.5 font-mono font-bold text-teal-800 cursor-pointer hover:underline whitespace-nowrap"
                       >
                         {c.numeroCaja}
                         {esPrioritaria && (
@@ -395,61 +413,106 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-slate-600 whitespace-nowrap font-mono text-[10px]">
+                      <td className="px-2 py-1.5 text-slate-600 whitespace-nowrap font-mono text-[10px]">
                         {formatFechaCaja(c.creadaEn)}
                       </td>
-                      <td className="px-4 py-3 text-slate-700 truncate" title={etiquetaCreadoPor(c)}>
+                      <td className="px-2 py-1.5 text-slate-700 truncate" title={etiquetaCreadoPor(c)}>
                         {etiquetaCreadoPor(c)}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-2 py-1.5">
                         <CentroBadge centro={c.centro} />
                       </td>
-                      <td className="px-4 py-3 font-mono font-bold text-violet-800 text-center">
+                      <td className="px-2 py-1.5 font-mono font-bold text-violet-800 text-center">
                         {c.subgrupos.length}
                       </td>
-                      <td className="px-4 py-3 text-slate-700 font-medium truncate" title={resumenSubgruposCaja(c)}>
+                      <td className="px-2 py-1.5 text-slate-700 font-medium truncate" title={resumenSubgruposCaja(c)}>
                         {resumenSubgruposCaja(c)}
                       </td>
-                      <td className="px-4 py-3 font-mono text-slate-600 truncate" title={resumenMaterialesCaja(c)}>
+                      <td className="px-2 py-1.5 font-mono text-slate-600 truncate" title={resumenMaterialesCaja(c)}>
                         {resumenMaterialesCaja(c)}
                       </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className="font-mono font-bold text-slate-900">
+                      <td
+                        className="px-2 py-1.5 text-center"
+                        title={c.subgrupos.length > 0 ? detalleCantidadesSubgrupos(c) : undefined}
+                      >
+                        <span className="font-mono font-bold text-slate-900 text-[11px]">
                           {cantidadCapturada} / {cantidadEsperada}
                         </span>
-                        <div className="w-16 bg-slate-100 rounded-full h-1.5 mx-auto mt-1 overflow-hidden">
-                          <div className="bg-teal-600 h-1.5 rounded-full" style={{ width: `${pct}%` }} />
+                        {c.subgrupos.length > 0 && (
+                          <div className="text-[9px] font-mono text-slate-500 truncate max-w-[100px] mx-auto mt-0.5">
+                            {detalleCantidadesSubgrupos(c)}
+                          </div>
+                        )}
+                        <div className="w-14 bg-slate-100 rounded-full h-1 mx-auto mt-0.5 overflow-hidden">
+                          <div className="bg-teal-600 h-1 rounded-full" style={{ width: `${pct}%` }} />
                         </div>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-2 py-1.5">
                         <EstadoBadge estado={c.estado} />
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="inline-flex items-center gap-1.5 flex-wrap justify-end">
+                      <td className="px-2 py-1.5 text-right">
+                        <div className="inline-flex items-center gap-0.5 justify-end">
                           <button
                             type="button"
                             onClick={() => setCajaParaDetalle(c)}
-                            className="px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition"
-                            title="Ver Detalle"
+                            className="px-2 py-1 text-[10px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition"
+                            title="Ver detalle"
                           >
                             Detalle
                           </button>
                           <button
                             type="button"
                             onClick={() => onSeleccionarCaja(c.id)}
-                            className="px-2.5 py-1 text-[11px] font-bold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg transition"
+                            className="px-2 py-1 text-[10px] font-bold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded transition"
+                            title="Ir a captura"
                           >
                             Capturar
                           </button>
+                          {c.estado === 'ABIERTA' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (c.subgrupos.length === 0) {
+                                  onSeleccionarCaja(c.id);
+                                  return;
+                                }
+                                setEditarSubgruposSoloLectura(false);
+                                setCajaParaEditarSubgrupos(c);
+                              }}
+                              className="inline-flex items-center gap-0.5 px-2 py-1 text-[10px] font-bold text-violet-800 bg-violet-50 hover:bg-violet-100 border border-violet-300 rounded transition"
+                              title={
+                                c.subgrupos.length === 0
+                                  ? 'Sin sub-grupos — ir a captura para definir cantidad'
+                                  : 'Editar cantidad por sub-grupo'
+                              }
+                            >
+                              <Pencil className="w-3 h-3 shrink-0" />
+                              Editar
+                            </button>
+                          )}
+                          {c.subgrupos.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditarSubgruposSoloLectura(true);
+                                setCajaParaEditarSubgrupos(c);
+                              }}
+                              className="inline-flex items-center gap-0.5 px-2 py-1 text-[10px] font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded transition"
+                              title={`Cantidad por sub-grupo: ${detalleCantidadesSubgrupos(c)}`}
+                            >
+                              <Layers className="w-3 h-3 shrink-0" />
+                              Cant.
+                            </button>
+                          )}
                           {puedeMostrarEliminarCaja(c.estado, canDeleteClosedCajas) && (
                             <button
                               type="button"
                               onClick={() => void handleEliminarCaja(c)}
                               disabled={eliminandoId === c.id}
-                              className="p-1.5 text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition disabled:opacity-50"
+                              className="p-1 text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded transition disabled:opacity-50"
                               title={c.estado === 'CERRADA' ? 'Eliminar caja cerrada (Gerente General)' : 'Eliminar caja'}
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Trash2 className="w-3 h-3" />
                             </button>
                           )}
                         </div>
@@ -462,7 +525,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
           </table>
         </div>
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 bg-slate-50/80 text-[11px] text-slate-600">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-2 py-1.5 border-t border-slate-100 bg-slate-50/80 text-[11px] text-slate-600">
           <div>
             {cajasFiltradas.length === 0 ? (
               '0 cajas'
@@ -505,6 +568,16 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
       )}
       {cajaParaDetalle && (
         <ModalDetalleCaja caja={cajaParaDetalle} onClose={() => setCajaParaDetalle(null)} />
+      )}
+      {cajaParaEditarSubgrupos && (
+        <ModalEditarSubgruposCaja
+          caja={state.cajas.find((c) => c.id === cajaParaEditarSubgrupos.id) ?? cajaParaEditarSubgrupos}
+          soloLectura={editarSubgruposSoloLectura}
+          onClose={() => {
+            setCajaParaEditarSubgrupos(null);
+            setEditarSubgruposSoloLectura(false);
+          }}
+        />
       )}
     </div>
   );

@@ -4,10 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BookmarkCheck,
-  Building2,
   ChevronLeft,
   ChevronRight,
   Database,
+  Download,
   FileSpreadsheet,
   HardDrive,
   RefreshCw,
@@ -15,7 +15,16 @@ import {
   Upload,
 } from 'lucide-react';
 import { useSeparacionSap } from '../../application/context';
-import { inventarioSapCargado } from '../../domain/inventario/sap-inventory';
+import {
+  exportarMaterialesPorAlmacenBodega,
+  exportarMaterialesPorAlmacenTodasBodegas,
+} from '../../domain/inventario/materiales-por-almacen-excel';
+import {
+  CENTROS_INVENTARIO_SAP,
+  inventarioSapCargado,
+  materialesCantidadPorAlmacen,
+  resumenInventarioPorBodega,
+} from '../../domain/inventario/sap-inventory';
 import { fetchInventarioSap, guardarInventarioSapArchivo } from '../../infrastructure/inventario/inventario-api';
 import { CentroBadge } from '../badges';
 
@@ -28,12 +37,50 @@ export function VistaMaestroBsd() {
   const [cargando, setCargando] = useState(false);
   const [paginaMateriales, setPaginaMateriales] = useState(1);
   const [paginaSeries, setPaginaSeries] = useState(1);
+  const [descargandoReporte, setDescargandoReporte] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const sapCargado = inventarioSapCargado(state);
   const totalSap = state.bsdEquipos.length;
-  const sapG945 = state.bsdEquipos.filter((e) => e.centro === 'G945').length;
+  const resumenBodegas = useMemo(
+    () => resumenInventarioPorBodega(state.bsdEquipos),
+    [state.bsdEquipos],
+  );
   const materialesG945 = state.materialesSap.length;
+
+  const materialesPorAlmacenTodas = useMemo(
+    () => materialesCantidadPorAlmacen(state.bsdEquipos),
+    [state.bsdEquipos],
+  );
+
+  const materialesPorAlmacenBodega = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof materialesCantidadPorAlmacen>>();
+    for (const centro of CENTROS_INVENTARIO_SAP) {
+      map.set(centro, materialesCantidadPorAlmacen(state.bsdEquipos, centro));
+    }
+    return map;
+  }, [state.bsdEquipos]);
+
+  const estiloTarjetaBodega: Record<string, { border: string; title: string; value: string; hint: string }> = {
+    G945: {
+      border: 'border-teal-200 bg-teal-50/40',
+      title: 'text-teal-900',
+      value: 'text-teal-800',
+      hint: 'text-teal-700',
+    },
+    G935: {
+      border: 'border-indigo-200 bg-indigo-50/40',
+      title: 'text-indigo-900',
+      value: 'text-indigo-800',
+      hint: 'text-indigo-700',
+    },
+    G944: {
+      border: 'border-sky-200 bg-sky-50/40',
+      title: 'text-sky-900',
+      value: 'text-sky-800',
+      hint: 'text-sky-700',
+    },
+  };
 
   const totalPaginasMateriales = Math.max(1, Math.ceil(state.materialesSap.length / REGISTROS_POR_PAGINA));
 
@@ -81,6 +128,27 @@ export function VistaMaestroBsd() {
       setPaginaSeries(totalPaginasSeries);
     }
   }, [paginaSeries, totalPaginasSeries]);
+
+  async function handleDescargarReporteTodasBodegas() {
+    if (!sapCargado || materialesPorAlmacenTodas.length === 0) return;
+    setDescargandoReporte('TODAS');
+    try {
+      await exportarMaterialesPorAlmacenTodasBodegas(materialesPorAlmacenTodas, materialesPorAlmacenBodega);
+    } finally {
+      setDescargandoReporte(null);
+    }
+  }
+
+  async function handleDescargarReporteBodega(centro: string) {
+    const filas = materialesPorAlmacenBodega.get(centro) ?? [];
+    if (!sapCargado || filas.length === 0) return;
+    setDescargandoReporte(centro);
+    try {
+      await exportarMaterialesPorAlmacenBodega(filas, centro);
+    } finally {
+      setDescargandoReporte(null);
+    }
+  }
 
   async function procesarArchivoSap(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -154,6 +222,17 @@ export function VistaMaestroBsd() {
           >
             <RefreshCw className="w-3.5 h-3.5 text-teal-700" /> Sincronizar Materiales
           </button>
+
+          <button
+            type="button"
+            onClick={() => void handleDescargarReporteTodasBodegas()}
+            disabled={!sapCargado || materialesPorAlmacenTodas.length === 0 || descargandoReporte !== null}
+            className="flex items-center gap-1.5 text-xs font-bold bg-violet-700 hover:bg-violet-800 text-white px-3 py-2 rounded-lg shadow-xs transition disabled:opacity-50"
+            title="Excel: cantidad de materiales por bodega y almacén"
+          >
+            <Download className="w-3.5 h-3.5" />
+            {descargandoReporte === 'TODAS' ? 'Generando…' : 'Reporte materiales'}
+          </button>
         </div>
       </div>
 
@@ -180,9 +259,15 @@ export function VistaMaestroBsd() {
             <div className="text-[11px] text-teal-700">
               {sapCargado ? (
                 <>
-                  Archivo: <strong>{state.sapArchivoNombre}</strong> ·{' '}
-                  <strong>{materialesG945} materiales</strong> en G945 ·{' '}
-                  <strong>{sapG945} series</strong> en bodega G945
+                  Archivo: <strong>{state.sapArchivoNombre}</strong>
+                  {' · '}
+                  {resumenBodegas.map((b, i) => (
+                    <span key={b.centro}>
+                      {i > 0 ? ' · ' : ''}
+                      <strong>{b.centro}</strong>: {b.series.toLocaleString()} series / {b.materiales}{' '}
+                      materiales
+                    </span>
+                  ))}
                 </>
               ) : (
                 'Sin archivo cargado — la captura de series está bloqueada'
@@ -202,42 +287,67 @@ export function VistaMaestroBsd() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs text-slate-500 font-semibold flex items-center justify-between">
             <span>Total Series SAP</span>
             <Database className="w-3.5 h-3.5 text-slate-400" />
           </div>
-          <div className="text-2xl font-black font-mono text-slate-900 mt-1">{totalSap}</div>
-          <div className="text-[11px] text-slate-400 mt-0.5">Inventario cargado</div>
+          <div className="text-2xl font-black font-mono text-slate-900 mt-1">
+            {totalSap.toLocaleString()}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-0.5">Todas las bodegas del Excel</div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-teal-200 shadow-xs">
-          <div className="text-xs text-teal-800 font-semibold flex items-center justify-between">
-            <span>Series en G945</span>
-            <Building2 className="w-3.5 h-3.5 text-teal-700" />
-          </div>
-          <div className="text-2xl font-black font-mono text-teal-800 mt-1">{sapG945}</div>
-          <div className="text-[11px] text-teal-600 mt-0.5">Validables para empaque</div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="text-xs text-slate-500 font-semibold flex items-center justify-between">
-            <span>Materiales SAP G945</span>
-            <BookmarkCheck className="w-3.5 h-3.5 text-teal-700" />
-          </div>
-          <div className="text-2xl font-black font-mono text-slate-900 mt-1">{materialesG945}</div>
-          <div className="text-[11px] text-teal-700 mt-0.5">Para creación de cajas</div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="text-xs text-slate-500 font-semibold flex items-center justify-between">
-            <span>Series G935 / G944</span>
-            <Building2 className="w-3.5 h-3.5 text-slate-400" />
-          </div>
-          <div className="text-2xl font-black font-mono text-slate-700 mt-1">{totalSap - sapG945}</div>
-          <div className="text-[11px] text-slate-400 mt-0.5">Otras bodegas</div>
-        </div>
+        {resumenBodegas.map((bodega) => {
+          const estilo = estiloTarjetaBodega[bodega.centro];
+          return (
+            <div
+              key={bodega.centro}
+              className={`p-4 rounded-xl border shadow-xs ${estilo.border}`}
+            >
+              <div className={`text-xs font-semibold flex items-center justify-between ${estilo.title}`}>
+                <span className="flex items-center gap-2">
+                  <CentroBadge centro={bodega.centro} />
+                  <span>Bodega {bodega.centro}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleDescargarReporteBodega(bodega.centro)}
+                  disabled={
+                    !sapCargado ||
+                    bodega.series === 0 ||
+                    descargandoReporte === bodega.centro ||
+                    descargandoReporte === 'TODAS'
+                  }
+                  className="p-1 rounded-md border border-white/80 bg-white/70 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={`Descargar Excel — materiales por almacén (${bodega.centro})`}
+                >
+                  {descargandoReporte === bodega.centro ? (
+                    <span className="text-[9px] font-bold px-0.5">…</span>
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+              <div className={`text-2xl font-black font-mono mt-2 ${estilo.value}`}>
+                {bodega.series.toLocaleString()}
+              </div>
+              <div className={`text-[11px] mt-0.5 font-semibold ${estilo.hint}`}>
+                series en inventario
+              </div>
+              <div className="mt-2 pt-2 border-t border-white/60 flex items-center justify-between text-[11px]">
+                <span className={`${estilo.hint} font-medium`}>Materiales únicos</span>
+                <span className={`font-mono font-bold ${estilo.value}`}>{bodega.materiales}</span>
+              </div>
+              {bodega.centro === 'G945' && materialesG945 > 0 && (
+                <div className={`text-[10px] mt-1 ${estilo.hint}`}>
+                  {materialesG945} materiales listados para cajas PX
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {state.materialesSap.length > 0 && (

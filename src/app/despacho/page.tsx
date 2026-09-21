@@ -418,12 +418,19 @@ export default function DespachoPagina() {
   const [sapComentario, setSapComentario] = useState('ACEPTADO');
   const [sapLoading, setSapLoading] = useState(false);
   const [sapMessage, setSapMessage] = useState({ text: '', type: '' });
+  /** true = encontrado en Orderry; false = no encontrado o error; null = sin consulta aún */
+  const [sapFoundInOrderry, setSapFoundInOrderry] = useState<boolean | null>(null);
   const [sapBatchList, setSapBatchList] = useState<any[]>([]);
+  /** Editable salvo cuando Orderry confirmó el equipo (found=true). */
+  const sapMarcaModeloEditable = sapFoundInOrderry !== true;
   const [sapHistoryList, setSapHistoryList] = useState<any[]>([]);
   const [sapHistorySearch, setSapHistorySearch] = useState('');
   const [sapHistoryLoading, setSapHistoryLoading] = useState(false);
   const [sapHistoryStartDate, setSapHistoryStartDate] = useState('');
   const [sapHistoryEndDate, setSapHistoryEndDate] = useState('');
+  const [sapHistoryPage, setSapHistoryPage] = useState(1);
+  const [sapHistorySelectedIds, setSapHistorySelectedIds] = useState<Set<string>>(new Set());
+  const SAP_HISTORY_PAGE_SIZE = 17;
 
   // Formulario conduce
   const [conduceNum, setConduceNum] = useState('TCSAL-0043');
@@ -584,6 +591,8 @@ export default function DespachoPagina() {
       const data = await res.json();
       if (data.ok && Array.isArray(data.rows)) {
         setSapHistoryList(data.rows);
+        setSapHistoryPage(1);
+        setSapHistorySelectedIds(new Set());
       } else {
         showNotification(data.error || 'Error al cargar historial SAP.', 'error');
       }
@@ -594,6 +603,39 @@ export default function DespachoPagina() {
     }
   };
 
+  async function checkSapImeiDuplicado(imei: string): Promise<{
+    duplicate: boolean;
+    equipo: { agencia?: string; dia?: string; marca?: string; modelo?: string; imeiFisico?: string } | null;
+  }> {
+    const res = await fetch(
+      `/api/despacho/sap?checkDuplicate=1&imei=${encodeURIComponent(imei.trim())}`,
+      { cache: 'no-store' },
+    );
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || 'No se pudo validar duplicado en SAP.');
+    }
+    return { duplicate: Boolean(data.duplicate), equipo: data.equipo ?? null };
+  }
+
+  const resetSapUnitForm = () => {
+    setSapImei('');
+    setSapAgencia('');
+    setSapDocumento('');
+    setSapMarca('');
+    setSapModelo('');
+    setSapGuia('');
+    setSapMaterial('');
+    setSapOrdenServicio('');
+    setSapEstatus('');
+    setSapFechaAceptado('');
+    setSapDia(new Date().toISOString().slice(0, 10));
+    setSapComentario('ACEPTADO');
+    setSapMessage({ text: '', type: '' });
+    setSapFoundInOrderry(null);
+    if (sapImeiTimeoutRef.current) clearTimeout(sapImeiTimeoutRef.current);
+  };
+
   const handleLookupSapImei = async (imei: string) => {
     const clean = imei.trim();
     if (!clean) return;
@@ -601,8 +643,19 @@ export default function DespachoPagina() {
     setSapMessage({ text: 'Buscando en Orderry...', type: 'info' });
 
     try {
+      const dupCheck = await checkSapImeiDuplicado(clean);
+      if (dupCheck.duplicate) {
+        setSapFoundInOrderry(null);
+        setSapMessage({
+          text: `IMEI duplicado en Registro Histórico SAP (${dupCheck.equipo?.agencia || 'SAP'} · ${dupCheck.equipo?.dia || '—'}).`,
+          type: 'error',
+        });
+        return;
+      }
+
       const result = await lookupImei(clean);
       if (result.found) {
+        setSapFoundInOrderry(true);
         setSapMessage({ text: `✓ Encontrado: ${result.marca} ${result.modelo} (Estatus: ${result.rawStatus || result.estadoGanado})`, type: 'success' });
         setSapMarca(result.marca || '');
         setSapModelo(result.modelo || '');
@@ -611,42 +664,68 @@ export default function DespachoPagina() {
         setSapEstatus(result.rawStatus || result.estadoGanado || '');
         setSapFechaAceptado(result.created_at ? new Date(result.created_at).toISOString().slice(0, 10) : '');
       } else {
-        setSapMessage({ text: '🚫 IMEI no encontrado en Orderry. Debe haber pasado por el sistema.', type: 'error' });
+        setSapFoundInOrderry(false);
+        setSapMessage({
+          text: 'IMEI no encontrado en Orderry. Complete Marca y Modelo manualmente.',
+          type: 'error',
+        });
         setSapMarca('');
         setSapModelo('');
-        setSapAgencia('');
         setSapOrdenServicio('');
         setSapEstatus('');
         setSapFechaAceptado('');
       }
     } catch (err: any) {
+      setSapFoundInOrderry(false);
+      setSapMarca('');
+      setSapModelo('');
+      setSapOrdenServicio('');
+      setSapEstatus('');
+      setSapFechaAceptado('');
       setSapMessage({ text: `Error: ${err.message}`, type: 'error' });
     } finally {
       setSapLoading(false);
     }
   };
 
-  const addSapToBatch = (e: React.FormEvent) => {
+  const addSapToBatch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sapImei.trim()) { showNotification('Ingrese el IMEI.', 'error'); return; }
+    if (sapLoading) { showNotification('Espere la consulta a Orderry.', 'error'); return; }
+    if (sapFoundInOrderry === null && sapImei.trim().length >= 14) {
+      showNotification('Espere el resultado de Orderry antes de agregar.', 'error');
+      return;
+    }
     if (!sapMaterial.trim()) { showNotification('El campo Material SAP es obligatorio.', 'error'); return; }
 
-    const validado = !!(sapMarca && sapModelo);
+    const foundInOrderry = sapFoundInOrderry === true;
+    if (!foundInOrderry && (!sapMarca.trim() || !sapModelo.trim())) {
+      if (sapFoundInOrderry === null) setSapFoundInOrderry(false);
+      setSapMessage({ text: 'Complete Marca y Modelo manualmente.', type: 'error' });
+      showNotification('Ingrese Marca y Modelo manualmente (equipo no encontrado en Orderry).', 'error');
+      return;
+    }
+    if (foundInOrderry && (!sapMarca.trim() || !sapModelo.trim())) {
+      showNotification('Espere la consulta Orderry o ingrese Marca y Modelo.', 'error');
+      return;
+    }
+
     const item = {
       agencia: sapAgencia.trim() || 'Sin Agencia',
       imeiFisico: sapImei.trim(),
       noDocumento: sapDocumento.trim() || 'N/A',
       material: sapMaterial.trim() || 'N/A',
-      marca: validado ? sapMarca.trim() : 'Desconocida',
-      modelo: validado ? sapModelo.trim() : 'Desconocido',
+      marca: sapMarca.trim(),
+      modelo: sapModelo.trim(),
       guia: sapGuia.trim() || 'N/A',
       dia: sapDia,
-      orderryStatus: validado ? 'paso por sistemas' : 'no paso por sistemas',
-      foundInOrderry: validado,
+      orderryStatus: foundInOrderry ? 'paso por sistemas' : 'no paso por sistemas',
+      foundInOrderry,
       comentario: sapComentario.trim() || 'ACEPTADO',
       ordenServicio: sapOrdenServicio.trim() || 'N/A',
       estatusOrderry: sapEstatus.trim() || 'N/A',
       fechaAceptadoOrderry: sapFechaAceptado.trim() || 'N/A',
+      razonNoOrderry: foundInOrderry ? undefined : 'No encontrado en Orderry',
     };
 
     if (sapBatchList.some((b) => b.imeiFisico === item.imeiFisico)) {
@@ -654,11 +733,24 @@ export default function DespachoPagina() {
       return;
     }
 
+    try {
+      const dupCheck = await checkSapImeiDuplicado(item.imeiFisico);
+      if (dupCheck.duplicate) {
+        const ref = dupCheck.equipo;
+        setSapMessage({
+          text: `IMEI duplicado en Registro Histórico SAP (${ref?.agencia || 'SAP'} · ${ref?.dia || '—'}).`,
+          type: 'error',
+        });
+        showNotification('Este IMEI ya está registrado en el Historial SAP.', 'error');
+        return;
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'No se pudo validar duplicado.', 'error');
+      return;
+    }
+
     setSapBatchList((prev) => [...prev, item]);
-    setSapImei('');
-    setSapMarca('');
-    setSapModelo('');
-    setSapMessage({ text: '', type: '' });
+    resetSapUnitForm();
     showNotification('Equipo agregado al lote.');
   };
 
@@ -687,6 +779,7 @@ export default function DespachoPagina() {
       if (res.ok && data.ok) {
         showNotification(`Lote de ${data.count} equipo(s) SAP guardado en Supabase.`);
         setSapBatchList([]);
+        resetSapUnitForm();
         loadSapHistory();
       } else {
         showNotification(data.error || 'Error al guardar lote SAP.', 'error');
@@ -714,14 +807,52 @@ export default function DespachoPagina() {
     }
   };
 
+  const sapHistoryTotalPages = Math.max(1, Math.ceil(sapHistoryList.length / SAP_HISTORY_PAGE_SIZE));
+  const sapHistoryPaginaInicio = (sapHistoryPage - 1) * SAP_HISTORY_PAGE_SIZE;
+  const sapHistoryPaginaRows = sapHistoryList.slice(
+    sapHistoryPaginaInicio,
+    sapHistoryPaginaInicio + SAP_HISTORY_PAGE_SIZE,
+  );
+
+  const sapHistoryTodosSeleccionados =
+    sapHistoryList.length > 0 && sapHistoryList.every((r) => sapHistorySelectedIds.has(r.id));
+
+  function toggleSapHistorySelectAll(checked: boolean) {
+    if (checked) {
+      setSapHistorySelectedIds(new Set(sapHistoryList.map((r) => r.id)));
+    } else {
+      setSapHistorySelectedIds(new Set());
+    }
+  }
+
+  function toggleSapHistoryRow(id: string, checked: boolean) {
+    setSapHistorySelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (sapHistoryPage > sapHistoryTotalPages) {
+      setSapHistoryPage(sapHistoryTotalPages);
+    }
+  }, [sapHistoryPage, sapHistoryTotalPages]);
+
   const exportSapToExcel = () => {
-    if (!sapHistoryList.length) {
-      showNotification('No hay datos de historial SAP para exportar.', 'error');
+    const rowsToExport =
+      sapHistorySelectedIds.size > 0
+        ? sapHistoryList.filter((r) => sapHistorySelectedIds.has(r.id))
+        : [];
+
+    if (rowsToExport.length === 0) {
+      showNotification('Marque "Seleccionar todo" o elija filas con el checkbox antes de exportar.', 'error');
       return;
     }
 
     const headers = ['AGENCIA', 'IMEI FISICO', 'No. De DOCUM', 'MARCA', 'MODELO', 'GUIA', 'DIA', 'COMENTARIO', 'ESTATUS', 'FECHA REGISTRO', 'USUARIO'];
-    const rows = sapHistoryList.map(r => ([
+    const rows = rowsToExport.map(r => ([
       r.agencia || '',
       r.imeiFisico,
       r.noDocumento || '',
@@ -738,7 +869,8 @@ export default function DespachoPagina() {
     const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Historial SAP');
-    XLSX.writeFile(workbook, `Historial_SAP_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(workbook, `Historial_SAP_${rowsToExport.length}reg_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    showNotification(`Exportados ${rowsToExport.length} registro(s) SAP.`);
   };
 
   const exportHistoryToExcel = () => {
@@ -2299,7 +2431,17 @@ export default function DespachoPagina() {
                           const val = e.target.value;
                           setSapImei(val);
                           if (sapImeiTimeoutRef.current) clearTimeout(sapImeiTimeoutRef.current);
-                          if (val.trim().length >= 14) {
+                          if (val.trim().length < 14) {
+                            setSapFoundInOrderry(null);
+                            setSapOrdenServicio('');
+                            setSapEstatus('');
+                            setSapFechaAceptado('');
+                            if (val.trim().length === 0) {
+                              setSapMarca('');
+                              setSapModelo('');
+                              setSapMessage({ text: '', type: '' });
+                            }
+                          } else {
                             sapImeiTimeoutRef.current = setTimeout(() => {
                               handleLookupSapImei(val);
                             }, 500);
@@ -2356,17 +2498,54 @@ export default function DespachoPagina() {
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                      {/* Marca */}
                       <div>
-                        <label className="block font-bold text-slate-700 uppercase mb-1">Marca</label>
-                        <input type="text" placeholder="Marca" value={sapMarca} readOnly className="w-full p-2 bg-slate-100 border border-slate-300 rounded font-bold text-slate-600" />
+                        <label className="block font-bold text-slate-700 uppercase mb-1">
+                          Marca
+                          {sapMarcaModeloEditable && sapImei.trim() && (
+                            <span className="ml-1 text-[9px] font-semibold text-amber-700 normal-case">(manual)</span>
+                          )}
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={sapMarcaModeloEditable ? 'Ingrese marca' : 'Marca'}
+                          value={sapMarca}
+                          readOnly={!sapMarcaModeloEditable}
+                          onChange={(e) => setSapMarca(e.target.value)}
+                          className={`w-full p-2 border border-slate-300 rounded font-bold ${
+                            sapMarcaModeloEditable
+                              ? 'bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-amber-400'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        />
                       </div>
-                      {/* Modelo */}
                       <div>
-                        <label className="block font-bold text-slate-700 uppercase mb-1">Modelo</label>
-                        <input type="text" placeholder="Modelo" value={sapModelo} readOnly className="w-full p-2 bg-slate-100 border border-slate-300 rounded text-slate-600" />
+                        <label className="block font-bold text-slate-700 uppercase mb-1">
+                          Modelo
+                          {sapMarcaModeloEditable && sapImei.trim() && (
+                            <span className="ml-1 text-[9px] font-semibold text-amber-700 normal-case">(manual)</span>
+                          )}
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={sapMarcaModeloEditable ? 'Ingrese modelo' : 'Modelo'}
+                          value={sapModelo}
+                          readOnly={!sapMarcaModeloEditable}
+                          onChange={(e) => setSapModelo(e.target.value)}
+                          className={`w-full p-2 border border-slate-300 rounded ${
+                            sapMarcaModeloEditable
+                              ? 'bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-amber-400'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        />
                       </div>
                     </div>
+                    {sapMarcaModeloEditable && sapImei.trim() && (
+                      <p className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                        {sapFoundInOrderry === false
+                          ? 'Equipo no encontrado o sin respuesta de Orderry — ingrese Marca y Modelo.'
+                          : 'Complete Marca y Modelo si el IMEI no está en Orderry.'}
+                      </p>
+                    )}
 
                     <div className="grid grid-cols-2 gap-2">
                       {/* Día */}
@@ -2473,9 +2652,34 @@ export default function DespachoPagina() {
                   <input type="date" value={sapHistoryEndDate} onChange={(e) => setSapHistoryEndDate(e.target.value)} className="p-1.5 border border-slate-300 rounded" />
                   <input type="text" placeholder="Buscar IMEI, Doc, Agencia..." value={sapHistorySearch} onChange={(e) => setSapHistorySearch(e.target.value)} className="p-1.5 border border-slate-300 rounded w-48" />
                   <button onClick={loadSapHistory} disabled={sapHistoryLoading} className="px-3 py-1.5 bg-[#001e6c] hover:bg-[#00155a] text-white font-bold rounded transition">Filtrar</button>
-                  <button onClick={exportSapToExcel} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded transition flex items-center gap-1"><FileText className="w-4 h-4" /> Exportar</button>
+                  <button
+                    onClick={exportSapToExcel}
+                    disabled={sapHistorySelectedIds.size === 0}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded transition flex items-center gap-1 disabled:opacity-50"
+                    title="Exporta los registros marcados con checkbox"
+                  >
+                    <FileText className="w-4 h-4" />
+                    Exportar ({sapHistorySelectedIds.size || 0})
+                  </button>
                 </div>
               </div>
+
+              {sapHistoryList.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                  <label className="inline-flex items-center gap-2 font-semibold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sapHistoryTodosSeleccionados}
+                      onChange={(e) => toggleSapHistorySelectAll(e.target.checked)}
+                      className="rounded border-slate-300"
+                    />
+                    Seleccionar todo ({sapHistoryList.length} registros)
+                  </label>
+                  <span className="text-slate-500">
+                    {sapHistorySelectedIds.size} seleccionado(s) · {SAP_HISTORY_PAGE_SIZE} por página
+                  </span>
+                </div>
+              )}
 
               {sapHistoryLoading ? (
                 <div className="p-12 text-center text-slate-500 animate-pulse">Cargando registros SAP...</div>
@@ -2486,6 +2690,9 @@ export default function DespachoPagina() {
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-100 font-bold border-b text-slate-600">
+                        <th className="p-2 border w-8 text-center">
+                          <span className="sr-only">Seleccionar</span>
+                        </th>
                         <th className="p-2 border">Agencia</th>
                         <th className="p-2 border">IMEI Físico</th>
                         <th className="p-2 border">No. De Documento</th>
@@ -2501,8 +2708,17 @@ export default function DespachoPagina() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {sapHistoryList.map((r) => (
-                        <tr key={r.id} className="hover:bg-slate-50">
+                      {sapHistoryPaginaRows.map((r) => (
+                        <tr key={r.id} className={`hover:bg-slate-50 ${sapHistorySelectedIds.has(r.id) ? 'bg-teal-50/40' : ''}`}>
+                          <td className="p-2 border text-center">
+                            <input
+                              type="checkbox"
+                              checked={sapHistorySelectedIds.has(r.id)}
+                              onChange={(e) => toggleSapHistoryRow(r.id, e.target.checked)}
+                              className="rounded border-slate-300"
+                              aria-label={`Seleccionar ${r.imeiFisico}`}
+                            />
+                          </td>
                           <td className="p-2 border font-bold text-slate-900">{r.agencia}</td>
                           <td className="p-2 border font-mono font-bold text-slate-800">{r.imeiFisico}</td>
                           <td className="p-2 border font-mono text-slate-600">{r.noDocumento}</td>
@@ -2523,6 +2739,37 @@ export default function DespachoPagina() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              )}
+
+              {sapHistoryList.length > 0 && !sapHistoryLoading && (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] text-slate-600 pt-1">
+                  <span>
+                    Mostrando {(sapHistoryPage - 1) * SAP_HISTORY_PAGE_SIZE + 1}–
+                    {Math.min(sapHistoryPage * SAP_HISTORY_PAGE_SIZE, sapHistoryList.length)} de {sapHistoryList.length}{' '}
+                    registros
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={sapHistoryPage <= 1}
+                      onClick={() => setSapHistoryPage((p) => Math.max(1, p - 1))}
+                      className="px-2 py-1 rounded border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-40"
+                    >
+                      Anterior
+                    </button>
+                    <span className="font-semibold tabular-nums">
+                      Página {sapHistoryPage} / {sapHistoryTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={sapHistoryPage >= sapHistoryTotalPages}
+                      onClick={() => setSapHistoryPage((p) => Math.min(sapHistoryTotalPages, p + 1))}
+                      className="px-2 py-1 rounded border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-40"
+                    >
+                      Siguiente
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

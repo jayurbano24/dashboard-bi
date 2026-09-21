@@ -18,6 +18,15 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const sap = createSAPService(getRequestBaseUrl(request));
 
+    if (searchParams.get('checkDuplicate') === '1') {
+      const imei = searchParams.get('imei')?.trim();
+      if (!imei) {
+        return NextResponse.json({ error: 'Parámetro imei requerido.' }, { status: 400 });
+      }
+      const equipo = await sap.findExistingEquipoByImei(imei);
+      return NextResponse.json({ ok: true, duplicate: Boolean(equipo), equipo });
+    }
+
     const imei = searchParams.get('imei');
     if (imei) {
       const history = await sap.getHistoryByImei(imei);

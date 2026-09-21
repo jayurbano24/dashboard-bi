@@ -31,6 +31,17 @@ export function capturasPorSubgrupo(caja: Pick<CajaEntidad, 'capturas'>, subgrup
   return caja.capturas.filter((cap) => cap.subgrupoId === subgrupoId).length;
 }
 
+/** Desglose compacto capturado/esperado por sub-grupo (p. ej. "0/50 · 12/30"). */
+export function detalleCantidadesSubgrupos(caja: CajaEntidad): string {
+  if (caja.subgrupos.length === 0) return 'Sin sub-grupos';
+  return caja.subgrupos
+    .map((sg) => {
+      const cap = capturasPorSubgrupo(caja, sg.id);
+      return `${cap}/${sg.cantidadEsperada}`;
+    })
+    .join(' · ');
+}
+
 export function subgrupoCompleto(caja: CajaEntidad, subgrupoId: string): boolean {
   const sg = subgrupoPorId(caja, subgrupoId);
   if (!sg) return false;
