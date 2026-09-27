@@ -17,7 +17,7 @@ type SidebarProps = {
 
 export function SeparacionSapSidebar({ vista, setVista }: SidebarProps) {
   return (
-    <aside className="w-60 flex-shrink-0 border-r border-slate-200 bg-white min-h-screen py-5 flex flex-col justify-between shadow-xs">
+    <aside className="sticky top-0 z-30 flex-shrink-0 w-60 min-w-[15rem] h-screen border-r border-slate-200 bg-white py-5 flex flex-col justify-between shadow-xs overflow-y-auto">
       <div>
         <div className="px-5 pb-4 mb-3 border-b border-slate-100">
           <div className="flex items-center gap-2">

@@ -29,20 +29,20 @@ function SeparacionSapShell() {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50/60 text-slate-900 font-sans antialiased">
+    <div className="flex min-h-screen bg-slate-50/60 text-slate-900 font-sans antialiased overflow-x-hidden">
       <SeparacionSapSidebar vista={vista} setVista={handleSetVista} />
-      <main className="flex-1 min-w-0 w-full p-8 overflow-auto">
-        <div className="mb-4 flex items-center justify-between gap-3">
+      <main className="flex-1 min-w-0 w-full p-3 sm:p-5 lg:p-6 overflow-x-auto overflow-y-auto">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <Link
             href="/"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 transition"
+            className="inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-slate-500 transition hover:text-slate-800"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             Volver al Dashboard
           </Link>
           <Link
             href="/despacho"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100"
           >
             Módulo de Despacho
           </Link>

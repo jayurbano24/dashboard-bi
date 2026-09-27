@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { NextResponse } from 'next/server';
 import { resolveUserJobTitle } from '@/lib/separacion-sap-caja-auth';
+import { isInvalidRefreshTokenError } from '@/lib/supabase/auth-errors';
 import { canDeleteClosedCaja } from '@/modules/separacion-sap/domain/cajas/caja-delete-permissions';
 
 export async function GET() {
@@ -9,9 +10,22 @@ export async function GET() {
     let user: any = null;
 
     try {
-      const result = await supabase.auth.getUser();
-      user = result?.data?.user ?? null;
-    } catch {
+      const { data, error } = await supabase.auth.getUser();
+      if (error) {
+        if (isInvalidRefreshTokenError(error)) {
+          await supabase.auth.signOut();
+        }
+        return NextResponse.json({ user: null }, { status: 401 });
+      }
+      user = data.user ?? null;
+    } catch (error) {
+      if (isInvalidRefreshTokenError(error)) {
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // ignore
+        }
+      }
       return NextResponse.json({ user: null }, { status: 401 });
     }
 

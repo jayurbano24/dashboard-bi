@@ -3,13 +3,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  Barcode,
   Building2,
   ChevronLeft,
   ChevronRight,
+  FileText,
   Filter,
   Layers,
   Pencil,
   Plus,
+  Tag,
   Trash2,
 } from 'lucide-react';
 import { useSeparacionSap } from '../../application/context';
@@ -17,6 +20,7 @@ import {
   detalleCantidadesSubgrupos,
   resumenMaterialesCaja,
   resumenSubgruposCaja,
+  resumenTotalesCaja,
   totalesCaja,
 } from '../../domain/cajas/caja-utils';
 import {
@@ -42,12 +46,113 @@ import { ColumnHeaderFilter } from '../molecules/ColumnHeaderFilter';
 import { ModalCrearCaja } from '../modals/ModalCrearCaja';
 import { ModalDetalleCaja } from '../modals/ModalDetalleCaja';
 import { ModalEditarSubgruposCaja } from '../modals/ModalEditarSubgruposCaja';
+import { ModalEtiquetaCaja } from '../modals/ModalEtiquetaCaja';
 
 type VistaCajasListadoProps = {
   onSeleccionarCaja: (cajaId: string) => void;
   /** Caja en captura reciente — se muestra primero en el listado. */
   cajaPrioritariaId?: string | null;
 };
+
+const iconBtnBase =
+  'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition disabled:opacity-40';
+
+function CajaAccionesIconBar({
+  caja,
+  canDeleteClosedCajas,
+  eliminandoId,
+  onDetalle,
+  onCapturar,
+  onEditar,
+  onEtiqueta,
+  onCant,
+  onEliminar,
+}: {
+  caja: CajaEntidad;
+  canDeleteClosedCajas: boolean;
+  eliminandoId: string | null;
+  onDetalle: () => void;
+  onCapturar: () => void;
+  onEditar: () => void;
+  onEtiqueta: () => void;
+  onCant: () => void;
+  onEliminar: () => void;
+}) {
+  const detalleCant = detalleCantidadesSubgrupos(caja);
+  const showEliminar = puedeMostrarEliminarCaja(caja.estado, canDeleteClosedCajas);
+
+  return (
+    <div className="inline-flex flex-wrap items-center justify-end gap-0.5">
+      <button
+        type="button"
+        title="Ver detalle"
+        aria-label="Ver detalle"
+        onClick={onDetalle}
+        className={`${iconBtnBase} border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100`}
+      >
+        <FileText className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        title="Capturar series"
+        aria-label="Capturar series"
+        onClick={onCapturar}
+        className={`${iconBtnBase} border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100`}
+      >
+        <Barcode className="h-3.5 w-3.5" />
+      </button>
+      {caja.estado === 'ABIERTA' && (
+        <button
+          type="button"
+          title={
+            caja.subgrupos.length === 0
+              ? 'Sin sub-grupos — ir a captura'
+              : 'Editar cantidades por sub-grupo'
+          }
+          aria-label="Editar cantidades"
+          onClick={onEditar}
+          className={`${iconBtnBase} border-violet-200 bg-violet-50 text-violet-800 hover:bg-violet-100`}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+      )}
+      {caja.subgrupos.length > 0 && (
+        <>
+          <button
+            type="button"
+            title="Etiqueta de caja — ver e imprimir"
+            aria-label="Etiqueta de caja"
+            onClick={onEtiqueta}
+            className={`${iconBtnBase} border-teal-300 bg-white text-teal-800 hover:bg-teal-50`}
+          >
+            <Tag className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            title={`Cantidades por sub-grupo: ${detalleCant}`}
+            aria-label="Consultar cantidades"
+            onClick={onCant}
+            className={`${iconBtnBase} border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}
+          >
+            <Layers className="h-3.5 w-3.5" />
+          </button>
+        </>
+      )}
+      {showEliminar && (
+        <button
+          type="button"
+          title={caja.estado === 'CERRADA' ? 'Eliminar caja cerrada' : 'Eliminar caja'}
+          aria-label="Eliminar caja"
+          onClick={onEliminar}
+          disabled={eliminandoId === caja.id}
+          className={`${iconBtnBase} border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null }: VistaCajasListadoProps) {
   const { state, dispatch } = useSeparacionSap();
@@ -61,6 +166,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
   const [editarSubgruposSoloLectura, setEditarSubgruposSoloLectura] = useState(false);
   const [eliminandoId, setEliminandoId] = useState<string | null>(null);
   const [canDeleteClosedCajas, setCanDeleteClosedCajas] = useState(false);
+  const [cajaParaEtiqueta, setCajaParaEtiqueta] = useState<CajaEntidad | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,22 +269,27 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
 
   return (
     <div className="w-full space-y-6 animate-fadeIn">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900">Control y Cantidad de Cajas PX</h1>
-          <p className="text-xs text-slate-500">
-            Materiales y series provienen del archivo Excel SAP cargado. Series no registradas en SAP serán rechazadas.
-          </p>
+      <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between xl:gap-4">
+          <div className="min-w-[12rem] flex-1">
+            <h1 className="text-base font-bold leading-snug text-slate-900 sm:text-lg xl:text-xl">
+              Control y Cantidad de Cajas PX
+            </h1>
+            <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-500">
+              Materiales y series provienen del Excel SAP. Series no registradas serán rechazadas.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setModalCrear(true)}
+            disabled={!sapCargado}
+            title={sapCargado ? undefined : 'Cargue el inventario SAP antes de crear cajas'}
+            className="inline-flex w-fit max-w-full shrink-0 items-center justify-center gap-1.5 self-start whitespace-nowrap rounded-lg bg-teal-700 px-4 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50 xl:self-auto"
+          >
+            <Plus className="h-4 w-4 shrink-0" />
+            Nueva Caja PX
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => setModalCrear(true)}
-          disabled={!sapCargado}
-          title={sapCargado ? undefined : 'Cargue el inventario SAP antes de crear cajas'}
-          className="flex items-center gap-1.5 text-xs font-bold bg-teal-700 hover:bg-teal-800 text-white px-4 py-2.5 rounded-lg shadow-xs transition disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <Plus className="w-4 h-4" /> Nueva Caja PX
-        </button>
       </div>
 
       {(inventarioCargando || cajasCargando) && (
@@ -200,13 +311,13 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
         <div
           role="button"
           tabIndex={0}
           onClick={() => setFiltroBodega('TODAS')}
           onKeyDown={(e) => e.key === 'Enter' && setFiltroBodega('TODAS')}
-          className={`p-4 rounded-xl border transition cursor-pointer ${
+          className={`p-3 sm:p-4 rounded-xl border transition cursor-pointer ${
             filtroBodega === 'TODAS'
               ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
               : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-900'
@@ -215,7 +326,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
           <div className={`text-xs font-semibold ${filtroBodega === 'TODAS' ? 'text-slate-300' : 'text-slate-500'}`}>
             Total Cajas
           </div>
-          <div className="text-2xl font-black font-mono mt-0.5">{totalCajas}</div>
+          <div className="text-xl sm:text-2xl font-black font-mono mt-0.5">{totalCajas}</div>
           <div className={`text-[11px] mt-1 ${filtroBodega === 'TODAS' ? 'text-slate-300' : 'text-slate-400'}`}>
             Todas las bodegas
           </div>
@@ -237,7 +348,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
               tabIndex={0}
               onClick={() => setFiltroBodega(centro)}
               onKeyDown={(e) => e.key === 'Enter' && setFiltroBodega(centro)}
-              className={`p-4 rounded-xl border transition cursor-pointer ${
+              className={`p-3 sm:p-4 rounded-xl border transition cursor-pointer ${
                 active ? `${colors.active} shadow-xs` : `bg-white border-slate-200 ${colors.hover} text-slate-900`
               }`}
             >
@@ -245,7 +356,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                 <span>Bodega {centro}</span>
                 <Building2 className="w-3.5 h-3.5" />
               </div>
-              <div className="text-2xl font-black font-mono mt-0.5">{cant}</div>
+              <div className="text-xl sm:text-2xl font-black font-mono mt-0.5">{cant}</div>
               <div className={`text-[11px] mt-1 ${active ? colors.label : 'text-slate-400'}`}>
                 {cant === 1 ? '1 caja registrada' : `${cant} cajas registradas`}
               </div>
@@ -298,22 +409,10 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
 
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs w-full">
         <div className="overflow-x-auto w-full">
-          <table className="w-full text-xs text-left table-fixed">
-            <colgroup>
-              <col style={{ width: '11%' }} />
-              <col style={{ width: '12%' }} />
-              <col style={{ width: '14%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '5%' }} />
-              <col style={{ width: '18%' }} />
-              <col style={{ width: '11%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: '13%' }} />
-            </colgroup>
+          <table className="w-full min-w-[920px] text-[11px] text-left">
             <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
               <tr>
-                <th className="px-2 py-1.5 whitespace-nowrap">
+                <th className="px-1.5 py-1 whitespace-nowrap">
                   <ColumnHeaderFilter
                     label="Número Caja"
                     options={opcionesUnicasColumna(cajasBase, 'numeroCaja')}
@@ -321,7 +420,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('numeroCaja', v)}
                   />
                 </th>
-                <th className="px-2 py-1.5 whitespace-nowrap">
+                <th className="hidden xl:table-cell px-1.5 py-1 whitespace-nowrap">
                   <ColumnHeaderFilter
                     label="Fecha creación"
                     options={opcionesUnicasColumna(cajasBase, 'fechaCreacion')}
@@ -329,7 +428,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('fechaCreacion', v)}
                   />
                 </th>
-                <th className="px-2 py-1.5 whitespace-nowrap">
+                <th className="hidden xl:table-cell px-1.5 py-1 whitespace-nowrap max-w-[120px]">
                   <ColumnHeaderFilter
                     label="Creado por"
                     options={opcionesUnicasColumna(cajasBase, 'creadoPor')}
@@ -337,7 +436,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('creadoPor', v)}
                   />
                 </th>
-                <th className="px-2 py-1.5">
+                <th className="px-1.5 py-1">
                   <ColumnHeaderFilter
                     label="Bodega"
                     options={opcionesUnicasColumna(cajasBase, 'centro')}
@@ -345,8 +444,8 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('centro', v)}
                   />
                 </th>
-                <th className="px-2 py-1.5 text-center">Sub-Gr.</th>
-                <th className="px-2 py-1.5">
+                <th className="px-1 py-1 text-center w-8">SG</th>
+                <th className="px-1.5 py-1 min-w-[140px]">
                   <ColumnHeaderFilter
                     label="Marca / Modelo"
                     options={opcionesUnicasColumna(cajasBase, 'marcaModelo')}
@@ -354,7 +453,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('marcaModelo', v)}
                   />
                 </th>
-                <th className="px-2 py-1.5">
+                <th className="hidden 2xl:table-cell px-1.5 py-1">
                   <ColumnHeaderFilter
                     label="Material SAP"
                     options={opcionesUnicasColumna(cajasBase, 'materialSap')}
@@ -362,8 +461,8 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('materialSap', v)}
                   />
                 </th>
-                <th className="px-2 py-1.5 text-center">Progreso</th>
-                <th className="px-2 py-1.5">
+                <th className="px-1.5 py-1 text-center w-[72px]">Prog.</th>
+                <th className="px-1.5 py-1 w-[88px]">
                   <ColumnHeaderFilter
                     label="Estado"
                     options={opcionesUnicasColumna(cajasBase, 'estado')}
@@ -371,7 +470,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('estado', v)}
                   />
                 </th>
-                <th className="px-2 py-2 text-right whitespace-nowrap">Acciones</th>
+                <th className="px-1.5 py-1 text-right w-[168px]">Acc.</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -384,6 +483,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
               ) : (
                 cajasPagina.map((c) => {
                   const { cantidadEsperada, cantidadCapturada } = totalesCaja(c);
+                  const totalesEtiqueta = resumenTotalesCaja(c);
                   const pct =
                     cantidadEsperada > 0
                       ? Math.min(100, Math.round((cantidadCapturada / cantidadEsperada) * 100))
@@ -404,118 +504,77 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     >
                       <td
                         onClick={() => onSeleccionarCaja(c.id)}
-                        className="px-2 py-1.5 font-mono font-bold text-teal-800 cursor-pointer hover:underline whitespace-nowrap"
+                        className="px-1.5 py-1 font-mono font-bold text-teal-800 cursor-pointer hover:underline whitespace-nowrap"
                       >
                         {c.numeroCaja}
                         {esPrioritaria && (
-                          <span className="ml-1.5 text-[9px] font-bold uppercase text-teal-600 bg-teal-100 px-1 py-0.5 rounded">
-                            En trabajo
-                          </span>
+                          <span className="ml-1 text-[8px] font-bold uppercase text-teal-600">●</span>
                         )}
                       </td>
-                      <td className="px-2 py-1.5 text-slate-600 whitespace-nowrap font-mono text-[10px]">
+                      <td className="hidden xl:table-cell px-1.5 py-1 text-slate-600 whitespace-nowrap font-mono text-[10px]">
                         {formatFechaCaja(c.creadaEn)}
                       </td>
-                      <td className="px-2 py-1.5 text-slate-700 truncate" title={etiquetaCreadoPor(c)}>
+                      <td
+                        className="hidden xl:table-cell px-1.5 py-1 text-slate-700 truncate max-w-[120px]"
+                        title={etiquetaCreadoPor(c)}
+                      >
                         {etiquetaCreadoPor(c)}
                       </td>
-                      <td className="px-2 py-1.5">
+                      <td className="px-1.5 py-1">
                         <CentroBadge centro={c.centro} />
                       </td>
-                      <td className="px-2 py-1.5 font-mono font-bold text-violet-800 text-center">
+                      <td className="px-1 py-1 font-mono font-bold text-violet-800 text-center text-[10px]">
                         {c.subgrupos.length}
                       </td>
-                      <td className="px-2 py-1.5 text-slate-700 font-medium truncate" title={resumenSubgruposCaja(c)}>
+                      <td className="px-1.5 py-1 text-slate-700 truncate max-w-[200px]" title={resumenSubgruposCaja(c)}>
                         {resumenSubgruposCaja(c)}
                       </td>
-                      <td className="px-2 py-1.5 font-mono text-slate-600 truncate" title={resumenMaterialesCaja(c)}>
+                      <td
+                        className="hidden 2xl:table-cell px-1.5 py-1 font-mono text-slate-600 truncate max-w-[100px]"
+                        title={resumenMaterialesCaja(c)}
+                      >
                         {resumenMaterialesCaja(c)}
                       </td>
                       <td
-                        className="px-2 py-1.5 text-center"
-                        title={c.subgrupos.length > 0 ? detalleCantidadesSubgrupos(c) : undefined}
+                        className="px-1.5 py-1 text-center"
+                        title={
+                          c.subgrupos.length > 0
+                            ? `${detalleCantidadesSubgrupos(c)} · ${totalesEtiqueta.materiales} mat · total ${totalesEtiqueta.equiposEsperados}`
+                            : undefined
+                        }
                       >
-                        <span className="font-mono font-bold text-slate-900 text-[11px]">
-                          {cantidadCapturada} / {cantidadEsperada}
+                        <span className="font-mono font-bold text-slate-900 tabular-nums">
+                          {cantidadCapturada}/{cantidadEsperada}
                         </span>
-                        {c.subgrupos.length > 0 && (
-                          <div className="text-[9px] font-mono text-slate-500 truncate max-w-[100px] mx-auto mt-0.5">
-                            {detalleCantidadesSubgrupos(c)}
-                          </div>
-                        )}
-                        <div className="w-14 bg-slate-100 rounded-full h-1 mx-auto mt-0.5 overflow-hidden">
-                          <div className="bg-teal-600 h-1 rounded-full" style={{ width: `${pct}%` }} />
+                        <div className="mx-auto mt-0.5 h-1 w-12 overflow-hidden rounded-full bg-slate-100">
+                          <div className="h-full rounded-full bg-teal-600" style={{ width: `${pct}%` }} />
                         </div>
                       </td>
-                      <td className="px-2 py-1.5">
-                        <EstadoBadge estado={c.estado} />
+                      <td className="px-1.5 py-1">
+                        <EstadoBadge estado={c.estado} compact />
                       </td>
-                      <td className="px-2 py-1.5 text-right">
-                        <div className="inline-flex items-center gap-0.5 justify-end">
-                          <button
-                            type="button"
-                            onClick={() => setCajaParaDetalle(c)}
-                            className="px-2 py-1 text-[10px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition"
-                            title="Ver detalle"
-                          >
-                            Detalle
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onSeleccionarCaja(c.id)}
-                            className="px-2 py-1 text-[10px] font-bold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded transition"
-                            title="Ir a captura"
-                          >
-                            Capturar
-                          </button>
-                          {c.estado === 'ABIERTA' && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (c.subgrupos.length === 0) {
-                                  onSeleccionarCaja(c.id);
-                                  return;
-                                }
-                                setEditarSubgruposSoloLectura(false);
-                                setCajaParaEditarSubgrupos(c);
-                              }}
-                              className="inline-flex items-center gap-0.5 px-2 py-1 text-[10px] font-bold text-violet-800 bg-violet-50 hover:bg-violet-100 border border-violet-300 rounded transition"
-                              title={
-                                c.subgrupos.length === 0
-                                  ? 'Sin sub-grupos — ir a captura para definir cantidad'
-                                  : 'Editar cantidad por sub-grupo'
-                              }
-                            >
-                              <Pencil className="w-3 h-3 shrink-0" />
-                              Editar
-                            </button>
-                          )}
-                          {c.subgrupos.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditarSubgruposSoloLectura(true);
-                                setCajaParaEditarSubgrupos(c);
-                              }}
-                              className="inline-flex items-center gap-0.5 px-2 py-1 text-[10px] font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded transition"
-                              title={`Cantidad por sub-grupo: ${detalleCantidadesSubgrupos(c)}`}
-                            >
-                              <Layers className="w-3 h-3 shrink-0" />
-                              Cant.
-                            </button>
-                          )}
-                          {puedeMostrarEliminarCaja(c.estado, canDeleteClosedCajas) && (
-                            <button
-                              type="button"
-                              onClick={() => void handleEliminarCaja(c)}
-                              disabled={eliminandoId === c.id}
-                              className="p-1 text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded transition disabled:opacity-50"
-                              title={c.estado === 'CERRADA' ? 'Eliminar caja cerrada (Gerente General)' : 'Eliminar caja'}
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
+                      <td className="px-1 py-1 text-right align-middle">
+                        <CajaAccionesIconBar
+                          caja={c}
+                          canDeleteClosedCajas={canDeleteClosedCajas}
+                          eliminandoId={eliminandoId}
+                          onDetalle={() => setCajaParaDetalle(c)}
+                          onCapturar={() => onSeleccionarCaja(c.id)}
+                          onEditar={() => {
+                            if (c.subgrupos.length === 0) {
+                              onSeleccionarCaja(c.id);
+                              return;
+                            }
+                            setEditarSubgruposSoloLectura(false);
+                            setCajaParaEditarSubgrupos(c);
+                          }}
+                          onEtiqueta={() => setCajaParaEtiqueta(c)}
+                          onCant={() => {
+                            setEditarSubgruposSoloLectura(true);
+                            setCajaParaEditarSubgrupos(c);
+                          }}
+                          onEliminar={() => void handleEliminarCaja(c)}
+                        />
                       </td>
                     </tr>
                   );
@@ -577,6 +636,13 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
             setCajaParaEditarSubgrupos(null);
             setEditarSubgruposSoloLectura(false);
           }}
+        />
+      )}
+      {cajaParaEtiqueta && (
+        <ModalEtiquetaCaja
+          caja={state.cajas.find((c) => c.id === cajaParaEtiqueta.id) ?? cajaParaEtiqueta}
+          vistaPrevia
+          onClose={() => setCajaParaEtiqueta(null)}
         />
       )}
     </div>

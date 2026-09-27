@@ -23,6 +23,26 @@ export function resumenMaterialesCaja(caja: CajaEntidad): string {
   return `${codigos[0]} +${codigos.length - 1}`;
 }
 
+export function conteoMaterialesCaja(caja: CajaEntidad): number {
+  return new Set(caja.subgrupos.map((sg) => sg.materialCodigo)).size;
+}
+
+/** Totales compactos para badge / etiqueta en listado de cajas. */
+export function resumenTotalesCaja(caja: CajaEntidad): {
+  equiposCapturados: number;
+  equiposEsperados: number;
+  materiales: number;
+  subgrupos: number;
+} {
+  const { cantidadCapturada, cantidadEsperada } = totalesCaja(caja);
+  return {
+    equiposCapturados: cantidadCapturada,
+    equiposEsperados: cantidadEsperada,
+    materiales: conteoMaterialesCaja(caja),
+    subgrupos: caja.subgrupos.length,
+  };
+}
+
 export function subgrupoPorId(caja: CajaEntidad, subgrupoId: string): CajaSubgrupo | undefined {
   return caja.subgrupos.find((sg) => sg.id === subgrupoId);
 }

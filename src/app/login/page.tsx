@@ -35,22 +35,17 @@ function LoginPageContent() {
 
     const validateSession = async () => {
       try {
-        const { data, error } = await supabase.auth.getSession();
-
-        if (error) {
-          // Evita ruido en consola cuando el refresh token local está vencido o ausente.
-          const message = String(error.message || '').toLowerCase();
-          if (message.includes('refresh token')) {
-            await supabase.auth.signOut({ scope: 'local' });
+        const response = await fetch('/api/auth/me', { cache: 'no-store' });
+        if (response.ok) {
+          const json = (await response.json()) as { user?: { id: string } | null };
+          if (!cancelled && json.user) {
+            router.replace(redirect);
           }
           return;
         }
 
-        if (!cancelled && data?.session) {
-          router.replace(redirect);
-        }
+        await supabase.auth.signOut({ scope: 'local' });
       } catch {
-        // Fallback defensivo para casos de sesión local corrupta.
         await supabase.auth.signOut({ scope: 'local' });
       }
     };
@@ -60,7 +55,7 @@ function LoginPageContent() {
     return () => {
       cancelled = true;
     };
-  }, [router, redirect, supabase]);
+  }, [router, redirect]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
