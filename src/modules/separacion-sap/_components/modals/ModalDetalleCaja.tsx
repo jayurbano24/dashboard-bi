@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Boxes, Printer, Trash2, X } from 'lucide-react';
 import { useSeparacionSap } from '../../application/context';
 import { capturasPorSubgrupo, totalesCaja } from '../../domain/cajas/caja-utils';
 import { TIPOS_PRODUCTO } from '../../domain/shared/constants';
-import { eliminarSubgrupoCajaSeparacionSap } from '../../infrastructure/cajas/cajas-api';
+import { eliminarSubgrupoCajaSeparacionSap, fetchCajaSeparacionSap } from '../../infrastructure/cajas/cajas-api';
 import type { CajaEntidad } from '../../types';
 import { CentroBadge, EstadoBadge, SubgrupoEstadoBadge } from '../badges';
 
@@ -18,6 +18,23 @@ export function ModalDetalleCaja({ caja: cajaInicial, onClose }: ModalDetalleCaj
   const { state, dispatch } = useSeparacionSap();
   const caja = state.cajas.find((c) => c.id === cajaInicial.id) ?? cajaInicial;
   const [eliminandoSubgrupoId, setEliminandoSubgrupoId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { caja: cajaCompleta } = await fetchCajaSeparacionSap(cajaInicial.id);
+        if (!cancelled) {
+          dispatch({ type: 'ACTUALIZAR_CAJA', payload: { caja: cajaCompleta } });
+        }
+      } catch {
+        // Progreso sigue visible vía contadores de sub-grupos en memoria.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cajaInicial.id, dispatch]);
 
   const { cantidadEsperada, cantidadCapturada } = totalesCaja(caja);
   const pct = cantidadEsperada > 0 ? Math.round((cantidadCapturada / cantidadEsperada) * 100) : 0;

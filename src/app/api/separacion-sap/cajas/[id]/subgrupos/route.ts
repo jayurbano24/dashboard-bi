@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
-import { loadBsdEquiposActivos } from '@/app/api/separacion-sap/_lib/load-bsd';
-import { loadCajasCompletasFromDb } from '@/app/api/separacion-sap/cajas/_lib/load-cajas';
 import { loadCajaById, syncCajaHeaderFromSubgrupos } from '@/app/api/separacion-sap/cajas/_lib/load-caja';
-import { lookupSerieEnSap } from '@/modules/separacion-sap/domain/cajas/serie-lookup';
+import { lookupSerieEnSapFromApi } from '@/app/api/separacion-sap/_lib/lookup-serie-api';
 import type { SubgrupoRow } from '@/modules/separacion-sap/infrastructure/cajas/cajas-mapper';
 import type {
   CrearSubgrupoInput,
@@ -75,17 +73,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return jsonError('Complete el Sub-Grupo en progreso antes de crear otro.', 409);
     }
 
-    const [bsdEquipos, { cajas }] = await Promise.all([
-      loadBsdEquiposActivos(),
-      loadCajasCompletasFromDb(admin),
-    ]);
-
-    const lookup = lookupSerieEnSap({
+    const lookup = await lookupSerieEnSapFromApi(admin, {
       rawSerial: body.primeraSerie.normalizedSerial,
       centroCaja: caja.centro,
-      bsdEquipos,
-      cajas,
-      excludeCajaId: cajaId,
+      cajaId,
     });
 
     if (!lookup.success) {

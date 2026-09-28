@@ -7,6 +7,9 @@ import {
 } from '@/modules/separacion-sap/infrastructure/cajas/cajas-mapper';
 import type { CajaEntidad, EsquemaSeries, TipoProductoId } from '@/modules/separacion-sap/types';
 import { applyCreatorLabelMap, resolveCreatorLabelMap } from '@/lib/user-display-name';
+import { fetchAllCapturasForCajaIds } from '@/app/api/separacion-sap/_lib/fetch-capturas';
+import { fetchAllSubgruposForCajaIds } from '@/app/api/separacion-sap/_lib/fetch-subgrupos';
+import { fetchAllPages } from '@/app/api/separacion-sap/_lib/supabase-fetch-all';
 
 type CajaRowDb = CajaRow & {
   marca: string;
@@ -18,6 +21,14 @@ type CajaRowDb = CajaRow & {
   cantidad_capturada: number;
   longitud_digitos: number;
   esquema_series: EsquemaSeries;
+};
+
+export type LoadCajasOptions = {
+  /**
+   * false (default): listado — no trae filas de capturas; progreso desde sub-grupos.
+   * true: incluye todas las capturas (paginadas) — p. ej. export o migraciones.
+   */
+  includeCapturas?: boolean;
 };
 
 function legacySubgrupoFromCaja(row: CajaRowDb): SubgrupoRow {
@@ -37,43 +48,57 @@ function legacySubgrupoFromCaja(row: CajaRowDb): SubgrupoRow {
   };
 }
 
-export async function loadCajasCompletasFromDb(admin: ReturnType<typeof getSupabaseAdmin>): Promise<{
+async function fetchAllCajasRows(admin: ReturnType<typeof getSupabaseAdmin>): Promise<CajaRowDb[]> {
+  return fetchAllPages<CajaRowDb>((from, to) =>
+    admin
+      .from('separacion_sap_cajas')
+      .select('*')
+      .order('creada_en', { ascending: false })
+      .range(from, to)
+      .then(({ data, error }) => ({ data: data as CajaRowDb[] | null, error })),
+  );
+}
+
+export async function loadCajasCompletasFromDb(
+  admin: ReturnType<typeof getSupabaseAdmin>,
+  options: LoadCajasOptions = {},
+): Promise<{
   cajas: CajaEntidad[];
   secuenciaCaja: number;
 }> {
-  const { data: cajasRows, error: cajasError } = await admin
-    .from('separacion_sap_cajas')
-    .select('*')
-    .order('creada_en', { ascending: false });
+  const includeCapturas = options.includeCapturas ?? false;
 
-  if (cajasError) throw new Error(cajasError.message);
-
-  const cajas = (cajasRows as CajaRowDb[] | null) ?? [];
+  const cajas = await fetchAllCajasRows(admin);
   if (cajas.length === 0) {
     return { cajas: [], secuenciaCaja: 1 };
   }
 
   const cajaIds = cajas.map((c) => c.id);
 
-  const [{ data: subgruposRows, error: subError }, { data: capturasRows, error: capError }] = await Promise.all([
-    admin.from('separacion_sap_caja_subgrupos').select('*').in('caja_id', cajaIds).order('orden'),
-    admin.from('separacion_sap_capturas').select('*').in('caja_id', cajaIds).order('captured_at', { ascending: false }),
-  ]);
-
-  if (subError && !subError.message.includes('does not exist')) {
-    throw new Error(subError.message);
+  let subgruposRows: SubgrupoRow[] = [];
+  try {
+    subgruposRows = await fetchAllSubgruposForCajaIds(admin, cajaIds);
+  } catch (subError) {
+    const message = subError instanceof Error ? subError.message : String(subError);
+    if (!message.includes('does not exist')) {
+      throw subError;
+    }
   }
-  if (capError) throw new Error(capError.message);
+
+  let capturasRows: CapturaRow[] = [];
+  if (includeCapturas) {
+    capturasRows = await fetchAllCapturasForCajaIds(admin, cajaIds);
+  }
 
   const subgruposByCaja = new Map<string, SubgrupoRow[]>();
-  for (const row of (subgruposRows as SubgrupoRow[] | null) ?? []) {
+  for (const row of subgruposRows) {
     const list = subgruposByCaja.get(row.caja_id) ?? [];
     list.push(row);
     subgruposByCaja.set(row.caja_id, list);
   }
 
   const capturasByCaja = new Map<string, CapturaRow[]>();
-  for (const row of (capturasRows as CapturaRow[] | null) ?? []) {
+  for (const row of capturasRows) {
     const list = capturasByCaja.get(row.caja_id) ?? [];
     list.push(row);
     capturasByCaja.set(row.caja_id, list);

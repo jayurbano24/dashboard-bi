@@ -49,8 +49,11 @@ export function lookupSerieEnSap(params: {
   bsdEquipos: BsdEquipo[];
   cajas: CajaEntidad[];
   excludeCajaId?: string;
+  /** API ya validó duplicados en Postgres (evita cargar todas las capturas). */
+  omitEscaneoDuplicados?: boolean;
 }): SerieLookupResult {
-  const { rawSerial, centroCaja, bsdEquipos, cajas, excludeCajaId } = params;
+  const { rawSerial, centroCaja, bsdEquipos, cajas, excludeCajaId, omitEscaneoDuplicados = false } =
+    params;
 
   if (bsdEquipos.length === 0) {
     return { success: false, code: 'SAP_NOT_LOADED', message: DOMAIN_ERRORS.SAP_NOT_LOADED };
@@ -62,27 +65,29 @@ export function lookupSerieEnSap(params: {
   }
   const normalizedSerial = parseResult.value;
 
-  const duplicado = buscarDuplicadoSerie(cajas, normalizedSerial, excludeCajaId);
-  if (duplicado) {
-    return {
-      success: false,
-      code: 'SERIAL_ALREADY_ASSIGNED',
-      message: mensajeDuplicadoSerie(duplicado),
-      serial: normalizedSerial,
-    };
-  }
+  if (!omitEscaneoDuplicados) {
+    const duplicado = buscarDuplicadoSerie(cajas, normalizedSerial, excludeCajaId);
+    if (duplicado) {
+      return {
+        success: false,
+        code: 'SERIAL_ALREADY_ASSIGNED',
+        message: mensajeDuplicadoSerie(duplicado),
+        serial: normalizedSerial,
+      };
+    }
 
-  const duplicadoEnMismaCaja = cajas
-    .filter((c) => c.id === excludeCajaId)
-    .flatMap((c) => c.capturas)
-    .find((c) => c.normalizedSerial === normalizedSerial);
-  if (duplicadoEnMismaCaja) {
-    return {
-      success: false,
-      code: 'DUPLICATE_SERIAL',
-      message: DOMAIN_ERRORS.DUPLICATE_SERIAL,
-      serial: normalizedSerial,
-    };
+    const duplicadoEnMismaCaja = cajas
+      .filter((c) => c.id === excludeCajaId)
+      .flatMap((c) => c.capturas)
+      .find((c) => c.normalizedSerial === normalizedSerial);
+    if (duplicadoEnMismaCaja) {
+      return {
+        success: false,
+        code: 'DUPLICATE_SERIAL',
+        message: DOMAIN_ERRORS.DUPLICATE_SERIAL,
+        serial: normalizedSerial,
+      };
+    }
   }
 
   const itemBsd = bsdEquipos.find((e) => e.normalizedSerial === normalizedSerial);

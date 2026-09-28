@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
 import { resolveCreatorDisplayName } from '@/lib/user-display-name';
+import { loadCajaById } from '@/app/api/separacion-sap/cajas/_lib/load-caja';
 import { loadCajasCompletasFromDb } from '@/app/api/separacion-sap/cajas/_lib/load-cajas';
 import type { CrearSubgrupoInput } from '@/modules/separacion-sap/types';
 
@@ -134,9 +135,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const { cajas } = await loadCajasCompletasFromDb(admin);
-    const caja = cajas.find((c) => c.id === cajaId);
-    if (!caja) throw new Error('Caja creada pero no encontrada al recargar.');
+    const caja = await loadCajaById(cajaId);
 
     return NextResponse.json({ ok: true, caja });
   } catch (err: unknown) {

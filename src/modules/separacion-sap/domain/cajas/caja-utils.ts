@@ -1,8 +1,30 @@
 import type { CajaEntidad, CajaSubgrupo } from '../../types';
 
+/** Capturas efectivas por sub-grupo (filas cargadas + contador persistido en Supabase). */
+export function capturasEfectivasPorSubgrupo(
+  caja: Pick<CajaEntidad, 'capturas'> & { subgrupos?: CajaEntidad['subgrupos'] },
+  subgrupoId: string,
+): number {
+  const sg = caja.subgrupos?.find((s) => s.id === subgrupoId);
+  const desdeFilas = caja.capturas.filter((cap) => cap.subgrupoId === subgrupoId).length;
+  const desdeDb = sg?.cantidadCapturada ?? 0;
+  return Math.max(desdeFilas, desdeDb);
+}
+
 export function totalesCaja(caja: CajaEntidad): { cantidadEsperada: number; cantidadCapturada: number } {
   const cantidadEsperada = caja.subgrupos.reduce((sum, sg) => sum + sg.cantidadEsperada, 0);
-  const cantidadCapturada = caja.capturas.length;
+
+  if (caja.subgrupos.length === 0) {
+    return { cantidadEsperada, cantidadCapturada: caja.capturas.length };
+  }
+
+  const porSubgrupos = caja.subgrupos.reduce(
+    (sum, sg) => sum + capturasEfectivasPorSubgrupo(caja, sg.id),
+    0,
+  );
+  const capturasHuerfanas = caja.capturas.filter((cap) => !cap.subgrupoId).length;
+  const cantidadCapturada = Math.max(porSubgrupos + capturasHuerfanas, caja.capturas.length);
+
   return { cantidadEsperada, cantidadCapturada };
 }
 
@@ -47,8 +69,11 @@ export function subgrupoPorId(caja: CajaEntidad, subgrupoId: string): CajaSubgru
   return caja.subgrupos.find((sg) => sg.id === subgrupoId);
 }
 
-export function capturasPorSubgrupo(caja: Pick<CajaEntidad, 'capturas'>, subgrupoId: string): number {
-  return caja.capturas.filter((cap) => cap.subgrupoId === subgrupoId).length;
+export function capturasPorSubgrupo(
+  caja: Pick<CajaEntidad, 'capturas'> & { subgrupos?: CajaEntidad['subgrupos'] },
+  subgrupoId: string,
+): number {
+  return capturasEfectivasPorSubgrupo(caja, subgrupoId);
 }
 
 /** Desglose compacto capturado/esperado por sub-grupo (p. ej. "0/50 · 12/30"). */

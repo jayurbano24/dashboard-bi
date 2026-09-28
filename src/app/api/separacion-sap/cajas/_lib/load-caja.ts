@@ -6,6 +6,8 @@ import {
   type SubgrupoRow,
 } from '@/modules/separacion-sap/infrastructure/cajas/cajas-mapper';
 import type { EsquemaSeries, TipoProductoId } from '@/modules/separacion-sap/types';
+import { fetchAllCapturasForCajaId } from '@/app/api/separacion-sap/_lib/fetch-capturas';
+import { fetchAllSubgruposForCajaId } from '@/app/api/separacion-sap/_lib/fetch-subgrupos';
 
 export type CajaRowDb = CajaRow & {
   marca: string;
@@ -47,12 +49,12 @@ export async function loadCajaById(cajaId: string) {
 
   if (cajaError) throw new Error(cajaError.message);
 
-  const [{ data: subgruposRows }, { data: capturasRows }] = await Promise.all([
-    admin.from('separacion_sap_caja_subgrupos').select('*').eq('caja_id', cajaId).order('orden'),
-    admin.from('separacion_sap_capturas').select('*').eq('caja_id', cajaId).order('captured_at', { ascending: false }),
+  const [subgruposRows, capturasRows] = await Promise.all([
+    fetchAllSubgruposForCajaId(admin, cajaId),
+    fetchAllCapturasForCajaId(admin, cajaId),
   ]);
 
-  let subgrupos = (subgruposRows as SubgrupoRow[] | null) ?? [];
+  let subgrupos = subgruposRows;
   const cajaDb = cajaRow as CajaRowDb;
   const esCajaVaciaGuiada =
     cajaDb.material_codigo === 'PENDIENTE' || cajaDb.cantidad_esperada === 0;
@@ -60,7 +62,7 @@ export async function loadCajaById(cajaId: string) {
     subgrupos = [legacySubgrupoFromCaja(cajaDb)];
   }
 
-  return assembleCaja(cajaDb, subgrupos, (capturasRows as CapturaRow[] | null) ?? []);
+  return assembleCaja(cajaDb, subgrupos, capturasRows as CapturaRow[]);
 }
 
 /** Sincroniza encabezado + contadores en una sola escritura (evita chk captura <= esperada). */

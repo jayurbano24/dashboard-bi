@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
-import { loadBsdEquiposActivos } from '@/app/api/separacion-sap/_lib/load-bsd';
-import { loadCajasCompletasFromDb } from '@/app/api/separacion-sap/cajas/_lib/load-cajas';
-import { lookupSerieEnSap } from '@/modules/separacion-sap/domain/cajas/serie-lookup';
+import { lookupSerieEnSapFromApi } from '@/app/api/separacion-sap/_lib/lookup-serie-api';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,17 +33,10 @@ export async function POST(request: Request) {
     if (!body.serial?.trim()) return jsonError('Serie requerida.', 400);
     if (!body.centroCaja?.trim()) return jsonError('Centro de caja requerido.', 400);
 
-    const [bsdEquipos, { cajas }] = await Promise.all([
-      loadBsdEquiposActivos(),
-      loadCajasCompletasFromDb(admin),
-    ]);
-
-    const result = lookupSerieEnSap({
+    const result = await lookupSerieEnSapFromApi(admin, {
       rawSerial: body.serial,
       centroCaja: body.centroCaja.trim().toUpperCase(),
-      bsdEquipos,
-      cajas,
-      excludeCajaId: body.cajaId,
+      cajaId: body.cajaId,
     });
 
     if (!result.success) {

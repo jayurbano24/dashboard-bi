@@ -31,6 +31,7 @@ import { inventarioSapCargado } from '../../domain/inventario/sap-inventory';
 import {
   actualizarEstadoCajaSeparacionSap,
   eliminarSubgrupoCajaSeparacionSap,
+  fetchCajaSeparacionSap,
   registrarCapturaSeparacionSap,
 } from '../../infrastructure/cajas/cajas-api';
 import type { CapturaSerie, CajaSubgrupo } from '../../types';
@@ -87,6 +88,23 @@ export function VistaCapturaCaja({ cajaId, onVolver }: VistaCapturaCajaProps) {
       setSubgrupoActivoId(subgrupoActivo.id);
     }
   }, [subgrupoActivo, subgrupoActivoId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { caja: cajaCompleta } = await fetchCajaSeparacionSap(cajaId);
+        if (!cancelled) {
+          dispatch({ type: 'ACTUALIZAR_CAJA', payload: { caja: cajaCompleta } });
+        }
+      } catch {
+        // El listado sigue usable con contadores de sub-grupos.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cajaId, dispatch]);
 
   useEffect(() => {
     if (modo === 'pistoleando') inputRef.current?.focus();

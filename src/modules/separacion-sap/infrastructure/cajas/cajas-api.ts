@@ -26,6 +26,11 @@ export async function fetchCajasSeparacionSap(): Promise<CajasGetResponse> {
   return parseJson<CajasGetResponse>(response);
 }
 
+export async function fetchCajaSeparacionSap(cajaId: string): Promise<{ ok: true; caja: CajaEntidad }> {
+  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}`, { cache: 'no-store' });
+  return parseJson(response);
+}
+
 export type CrearCajaPayload = {
   centro: string;
   almacen: string;
