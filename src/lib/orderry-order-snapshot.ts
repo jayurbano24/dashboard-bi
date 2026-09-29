@@ -1,5 +1,7 @@
 /** Extracción de campos snapshot desde GET /v2/orders/{id} */
 
+import { fetchOrderryTimelineHints } from '@/lib/orderry/order-timeline-hints';
+
 const FIELD_ID: Record<string, string> = {
   'TIPO DE INGRESO': 'f3129962',
   'CANAL DE INGRESO': 'f3129964',
@@ -7,8 +9,10 @@ const FIELD_ID: Record<string, string> = {
   GARANTIA: 'f3129961',
   'FECHA DE VENTA POP': 'f3129227',
   'FECHA DE VENTA -POP': 'f3129227',
-  'IN COURIER': 'f3151083',
-  'FOLIO PDV': 'f3130204',
+  /** Catálogo Orderry: f3151083 = FOLIO PDV, f3151084 = IN COURIER, f3130204 = B2B. */
+  'FOLIO PDV': 'f3151083',
+  'IN COURIER': 'f3151084',
+  B2B: 'f3130204',
   POBLACION: 'f3156821',
   'DIRECCION SUCURSAL': 'f3156821',
 };
@@ -63,33 +67,13 @@ export function getOrderryCustomField(
   return '';
 }
 
-const STATUSES_AFTER_REPAIR = [
-  'EN CONTROL DE CALIDAD',
-  'REPARADO',
-  'PARA DEVOLVER',
-  'PARA DEVOLUCION',
-  'PARA DEVOLUCIÓN',
-  'LISTO PARA RETIRAR',
-  'ENTREGADO',
-  'CERRADO',
-  'TERMINADO',
-  'COMPLETADO',
-  'NO REPARADO',
-  'SIN REPARACION',
-  'IRREPARABLE',
-];
-
 export function extractOrderryOrderSnapshot(match: Record<string, unknown>): OrderryOrderSnapshot {
   const cf = match.custom_fields as Record<string, unknown> | undefined;
   const asset = match.asset as Record<string, unknown> | undefined;
   const client = match.client as Record<string, unknown> | undefined;
   const status = match.status as { id?: number; name?: string; group?: { name?: string } } | undefined;
 
-  const rawStatusName = String(status?.name ?? '').toUpperCase();
-  const isAfterRepair = STATUSES_AFTER_REPAIR.some((s) => rawStatusName.includes(s.replace('Ó', 'O')));
-  const done_at =
-    (match.done_at as string | null | undefined) ??
-    (isAfterRepair ? ((match.modified_at as string | null | undefined) ?? null) : null);
+  const done_at = (match.done_at as string | null | undefined) ?? null;
 
   const cliente =
     getOrderryCustomField(cf, 'Nombre', 'nombre') ||
@@ -382,10 +366,12 @@ export async function enrichReportRowsFromOrderry<T extends Record<string, unkno
       const snap = await fetchOrderryOrderSnapshot(orderId);
       if (!snap) continue;
 
+      const timelineHints = await fetchOrderryTimelineHints(orderId);
+
       const merged = mergeOrderrySnapshotIntoReportRow(row, snap, {
         preferOrderry: options?.preferOrderry,
       });
-      Object.assign(row, merged);
+      Object.assign(row, merged, { orderryTimelineHints: timelineHints });
       enriched += 1;
 
       await new Promise((r) => setTimeout(r, 60));

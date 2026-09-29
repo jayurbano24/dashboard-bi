@@ -16,6 +16,7 @@ import {
   mergePronetReportRows,
 } from '@/lib/orderry/fetch-pronet-orders';
 import { enrichReportRowsFromOrderry } from '@/lib/orderry-order-snapshot';
+import { captureMissingOrderryTimelines } from '@/integrations/orderry-history/capture-missing-timelines';
 import { GenerateServitotalReportUseCase } from '@/modules/report-engine/application/GenerateServitotalReportUseCase';
 import { ServitotalTemplateEngine } from '@/modules/report-engine/domain/ServitotalTemplateEngine';
 import { GeneratePronetReportUseCase } from '@/modules/report-engine/application/GeneratePronetReportUseCase';
@@ -32,7 +33,7 @@ import {
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function GET(request: Request) {
   try {
@@ -239,6 +240,13 @@ export async function GET(request: Request) {
         .map((row) => (row.orderId ? String(row.orderId) : ''))
         .filter(Boolean);
 
+      const timelineCapture = await captureMissingOrderryTimelines(
+        claroRows.map((row) => ({
+          orderId: row.orderId ? String(row.orderId) : '',
+          orderName: String(row.orderName || ''),
+        })),
+      );
+
       const [historialByOrder, historialOrigenByOrder] = await Promise.all([
         getHistorialEstadoFechasPorOrdenes(claroOrderIds),
         getHistorialOrigenByOrders(claroOrderIds),
@@ -277,7 +285,13 @@ export async function GET(request: Request) {
           dataSource: 'supabase_sync+orderry_live',
           claroCandidates: claroRows.length,
           orderryEnriched: enrichResult.enriched,
+          timelineCapture,
         },
+        hint: timelineCapture.skippedNoSession
+          ? 'Falta la sesión de Orderry. Inicia sesión y vuelve a generar el reporte para guardar el movimiento de las órdenes.'
+          : timelineCapture.capturedOrders > 0
+            ? `Se guardó el movimiento de ${timelineCapture.capturedOrders} órdenes de operador y distribuidor Claro.`
+            : undefined,
       });
     }
 

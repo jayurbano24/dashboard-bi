@@ -1,5 +1,6 @@
 {
   "framework": "nextjs",
+  "installCommand": "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install",
   "crons": [
     {
       "path": "/api/isp/daily-sync",

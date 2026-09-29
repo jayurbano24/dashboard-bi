@@ -39,6 +39,7 @@ export const HISTORIAL_STATUS_DATE_COLUMNS: HistorialStatusDateColumn[] = [
   { label: 'Fecha Para Devolución Life-One', orderryNames: ['PARA DEVOLUCIÓN LIFE ONE', 'PARA DEVOLUCION LIFE ONE'], statusIds: [1314652] },
   { label: 'Fecha Devolución Cambio en Agencia', orderryNames: ['DEVOLUCION CAMBIO EN AGENCIA'], statusIds: [1322780] },
   { label: 'Fecha Para Devolver a Bodega SAP', orderryNames: ['PARA DEVOLVER A BODEGA/SAP'], statusIds: [1359544] },
+  { label: 'Fecha Para Entregar', orderryNames: ['PARA ENTREGAR'] },
   { label: 'Fecha Entregado', orderryNames: ['ENTREGADO'], statusIds: [1297299] },
   { label: 'Fecha Archivado', orderryNames: ['Archivado', 'ARCHIVADO'], statusIds: [1297300] },
   { label: 'Fecha Entregado Nota de Crédito', orderryNames: ['ENTREGADO-NOTA DE CREDITO'], statusIds: [1311246] },

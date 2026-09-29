@@ -13,6 +13,7 @@
  *   npx tsx scripts/run-backfill.ts --apply
  *   npx tsx scripts/run-backfill.ts --apply --order-id=21747238
  */
+import { buildOrderStatusSourceEventId } from '../src/lib/order-status-history';
 import { loadEnv, requireEnv } from './lib/load-env';
 
 type StatusRow = { id: number; name: string; group_name: string };
@@ -22,7 +23,24 @@ type StatusEvent = {
   status_name: string;
   changed_at: string;
   source: string;
+  source_event_id: string;
 };
+
+function withSourceEventId(
+  ev: Omit<StatusEvent, 'source_event_id'>,
+  remoteId?: string | null,
+): StatusEvent {
+  return {
+    ...ev,
+    source_event_id: buildOrderStatusSourceEventId({
+      source: ev.source,
+      orderId: ev.order_id,
+      statusId: ev.status_id,
+      eventAt: ev.changed_at,
+      remoteId,
+    }),
+  };
+}
 
 const APPLY = process.argv.includes('--apply');
 const DELAY_MS = 250;
@@ -115,13 +133,19 @@ function parseRemoteEvents(orderId: string, body: unknown, catalogById: Map<numb
     );
     if (!changedAt) continue;
 
-    out.push({
-      order_id: orderId,
-      status_id: statusId,
-      status_name: resolveStatusName(statusId, catalogById),
-      changed_at: changedAt,
-      source: 'orderry_events',
-    });
+    const remoteId = String(row.id ?? row.uuid ?? '').trim() || null;
+    out.push(
+      withSourceEventId(
+        {
+          order_id: orderId,
+          status_id: statusId,
+          status_name: resolveStatusName(statusId, catalogById),
+          changed_at: changedAt,
+          source: 'orderry_events',
+        },
+        remoteId,
+      ),
+    );
   }
   return out;
 }
@@ -173,19 +197,24 @@ async function fetchWebhooksForOrder(
 ): Promise<StatusEvent[]> {
   try {
     const rows = (await fetchJson(
-      `${sbUrl}/rest/v1/orderry_webhooks?select=order_id,new_status_id,webhook_at,event_name&order_id=eq.${orderId}&new_status_id=not.is.null&order=webhook_at.asc`,
+      `${sbUrl}/rest/v1/orderry_webhooks?select=id,order_id,new_status_id,webhook_at,event_name&order_id=eq.${orderId}&new_status_id=not.is.null&order=webhook_at.asc`,
       sbHeaders,
     )) as Array<{ order_id: string; new_status_id: number; webhook_at: string; event_name: string }>;
 
     return (rows || [])
       .filter((r) => Number.isFinite(Number(r.new_status_id)))
-      .map((r) => ({
-        order_id: String(r.order_id),
-        status_id: Number(r.new_status_id),
-        status_name: resolveStatusName(Number(r.new_status_id), catalogById),
-        changed_at: r.webhook_at,
-        source: 'webhook',
-      }));
+      .map((r) =>
+        withSourceEventId(
+          {
+            order_id: String(r.order_id),
+            status_id: Number(r.new_status_id),
+            status_name: resolveStatusName(Number(r.new_status_id), catalogById),
+            changed_at: r.webhook_at,
+            source: 'webhook',
+          },
+          (r as { id?: string }).id ?? null,
+        ),
+      );
   } catch {
     return [];
   }
@@ -204,13 +233,15 @@ function buildSyntheticEvents(
     || [...catalogById.values()].find((s) => normalizeName(s.name) === 'ORDEN CREADA');
 
   if (createdAt && createdRow) {
-    events.push({
-      order_id: orderId,
-      status_id: createdRow.id,
-      status_name: createdRow.name,
-      changed_at: createdAt,
-      source: 'synthetic_created',
-    });
+    events.push(
+      withSourceEventId({
+        order_id: orderId,
+        status_id: createdRow.id,
+        status_name: createdRow.name,
+        changed_at: createdAt,
+        source: 'synthetic_created',
+      }),
+    );
   }
 
   const status = order.status as { id?: number; name?: string } | undefined;
@@ -219,13 +250,15 @@ function buildSyntheticEvents(
     const changedAt = String(
       order.modified_at || order.done_at || order.closed_at || order.created_at || new Date().toISOString(),
     );
-    events.push({
-      order_id: orderId,
-      status_id: statusId,
-      status_name: status?.name || resolveStatusName(statusId, catalogById),
-      changed_at: changedAt,
-      source: 'synthetic_current',
-    });
+    events.push(
+      withSourceEventId({
+        order_id: orderId,
+        status_id: statusId,
+        status_name: status?.name || resolveStatusName(statusId, catalogById),
+        changed_at: changedAt,
+        source: 'synthetic_current',
+      }),
+    );
   }
 
   return events;

@@ -142,7 +142,8 @@ export async function GET(request: Request) {
       'COLOR':              'f3129228',
       'GARANTIA':           'f3129961',
       'FECHA DE VENTA POP': 'f3129227',
-      'IN COURIER':         'f3151083',
+      'FOLIO PDV':          'f3151083',
+      'IN COURIER':         'f3151084',
     };
 
     function getCustomField(obj: Record<string, any> | undefined, ...keys: string[]): string {

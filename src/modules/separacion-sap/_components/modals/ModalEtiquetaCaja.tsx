@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo } from 'react';
 import { Box, Package, Printer, X } from 'lucide-react';
+import { BarcodeCode128 } from '../barcode-code128';
 import { capturasPorSubgrupo, subgrupoCompleto } from '../../domain/cajas/caja-utils';
 import { labelValoracion } from '../../domain/cajas/valoracion';
 import { TIPOS_PRODUCTO } from '../../domain/shared/constants';
@@ -108,7 +109,7 @@ function StatCell({ label, value }: { label: string; value: number | string }) {
 export function ModalEtiquetaCaja({ caja, onClose, vistaPrevia = false }: ModalEtiquetaCajaProps) {
   const lineas = subgruposParaEtiqueta(caja, vistaPrevia);
   const totalUnidades = lineas.reduce((s, sg) => s + sg.cantidadEsperada, 0);
-  const totalCapturadas = caja.capturas.length;
+  const totalCapturadas = lineas.reduce((s, sg) => s + capturasPorSubgrupo(caja, sg.id), 0);
   const totalMateriales = new Set(lineas.map((l) => l.materialCodigo)).size;
   const pctCaptura = totalUnidades > 0 ? Math.min(100, Math.round((totalCapturadas / totalUnidades) * 100)) : 0;
   const fechaRef = caja.cerradaEn ? new Date(caja.cerradaEn) : new Date(caja.creadaEn);
@@ -175,7 +176,7 @@ export function ModalEtiquetaCaja({ caja, onClose, vistaPrevia = false }: ModalE
                     <p className="text-[7px] font-bold uppercase tracking-[0.22em] text-teal-300/95">
                       TECHCORP · Separación SAP
                     </p>
-                    <p className="mt-2 font-mono text-[26px] font-black leading-none tracking-tight text-white">
+                    <p className="mt-1.5 font-mono text-[34px] font-black leading-none tracking-tight text-white">
                       {caja.numeroCaja}
                     </p>
                     <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[9px] text-slate-300">
@@ -281,16 +282,15 @@ export function ModalEtiquetaCaja({ caja, onClose, vistaPrevia = false }: ModalE
                 )}
               </div>
 
-              <div className="border-t border-slate-200 bg-slate-50 px-4 py-3">
-                <div className="rounded border border-dashed border-slate-300 bg-white px-3 py-2.5 text-center">
-                  <p className="font-mono text-[11px] font-bold tracking-[0.35em] text-slate-800">
-                    {caja.numeroCaja.replace(/-/g, ' ')}
-                  </p>
-                  <p className="mt-1 text-[8px] font-medium text-slate-500">
-                    {caja.centro} · {totalUnidades} uds · {lineas.length} sub-grupo{lineas.length !== 1 ? 's' : ''} ·{' '}
-                    {totalMateriales} material{totalMateriales !== 1 ? 'es' : ''}
-                  </p>
-                </div>
+              <div className="border-t border-slate-200 bg-white px-3 py-3">
+                <BarcodeCode128 value={caja.numeroCaja} className="mx-auto h-14 w-full" />
+                <p className="mt-1 text-center font-mono text-lg font-black tracking-[0.18em] text-slate-900">
+                  {caja.numeroCaja}
+                </p>
+                <p className="mt-1 text-center text-[8px] font-medium text-slate-500">
+                  {caja.centro} · {totalUnidades} uds · {lineas.length} sub-grupo{lineas.length !== 1 ? 's' : ''} ·{' '}
+                  {totalMateriales} material{totalMateriales !== 1 ? 'es' : ''}
+                </p>
               </div>
             </div>
           </div>

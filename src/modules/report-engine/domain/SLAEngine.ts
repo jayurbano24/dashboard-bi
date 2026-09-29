@@ -20,12 +20,18 @@ export class SLAEngine {
     this.calendar = calendar;
   }
 
+  /** Días hábiles del reporte Claro: GAM 5, NO GAM 3. Metro/Guatemala cuentan como GAM. */
   public getSlaObjetivo(region: string): number {
     const reg = region.trim().toUpperCase();
-    if (reg === 'METRO 1' || reg === 'METRO 2' || reg === 'METRO ORIENTE' || reg === 'GAM' || reg === 'GUATEMALA') {
+    if (reg === 'NO GAM') return 3;
+    if (
+      reg === 'GAM'
+      || reg === 'GUATEMALA'
+      || reg.includes('METRO')
+    ) {
       return 5;
     }
-    return 3; // Occidente, Sur Occidente, Norte, etc
+    return 3;
   }
 
   public calculateSLA(startDate: Date | null, endDate: Date | null, region: string): SLAResult {

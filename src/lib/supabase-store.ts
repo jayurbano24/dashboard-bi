@@ -1,4 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
+import type { OrderStatusTimelapseRow } from '@/lib/order-status-history';
+
+export type { OrderStatusTimelapseRow };
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -891,36 +894,51 @@ export const getDespachoReportRows = async (filters?: {
   marca?: string;
   modelo?: string;
   doa?: string;
+  orderNames?: string[];
 }) => {
   const supabase = getSupabaseAdmin();
-  let query = supabase.from('despacho_conduce_rows').select('*');
+  const wantedNames = [...new Set((filters?.orderNames ?? []).map((name) => name.trim()).filter(Boolean))];
 
-  if (filters?.startDate) {
-    query = query.gte('fecha', filters.startDate);
-  }
-  if (filters?.endDate) {
-    query = query.lte('fecha', filters.endDate);
-  }
-  if (filters?.dealer && filters.dealer !== 'ALL') {
-    query = query.eq('dealer', filters.dealer);
-  }
-  if (filters?.courrier && filters.courrier !== 'ALL') {
-    query = query.eq('courrier', filters.courrier);
-  }
-  if (filters?.marca && filters.marca !== 'ALL') {
-    query = query.eq('marca', filters.marca);
-  }
-  if (filters?.modelo && filters.modelo !== 'ALL') {
-    query = query.eq('modelo', filters.modelo);
-  }
-  if (filters?.doa && filters.doa !== 'ALL') {
-    query = query.eq('doa', filters.doa === 'true');
-  }
+  let rows: any[] = [];
+  if (wantedNames.length > 0) {
+    for (let i = 0; i < wantedNames.length; i += 80) {
+      const chunk = wantedNames.slice(i, i + 80);
+      const { data, error } = await supabase
+        .from('despacho_conduce_rows')
+        .select('*')
+        .in('order_name', chunk);
+      throwIfError(error, 'despacho_conduce_rows');
+      rows.push(...(data || []));
+    }
+  } else {
+    let query = supabase.from('despacho_conduce_rows').select('*');
 
-  const { data, error } = await query.order('fecha', { ascending: false }).limit(3000);
-  throwIfError(error, 'despacho_conduce_rows');
+    if (filters?.startDate) {
+      query = query.gte('fecha', filters.startDate);
+    }
+    if (filters?.endDate) {
+      query = query.lte('fecha', filters.endDate);
+    }
+    if (filters?.dealer && filters.dealer !== 'ALL') {
+      query = query.eq('dealer', filters.dealer);
+    }
+    if (filters?.courrier && filters.courrier !== 'ALL') {
+      query = query.eq('courrier', filters.courrier);
+    }
+    if (filters?.marca && filters.marca !== 'ALL') {
+      query = query.eq('marca', filters.marca);
+    }
+    if (filters?.modelo && filters.modelo !== 'ALL') {
+      query = query.eq('modelo', filters.modelo);
+    }
+    if (filters?.doa && filters.doa !== 'ALL') {
+      query = query.eq('doa', filters.doa === 'true');
+    }
 
-  let rows = data || [];
+    const { data, error } = await query.order('fecha', { ascending: false }).limit(3000);
+    throwIfError(error, 'despacho_conduce_rows');
+    rows = data || [];
+  }
   if (filters?.searchTerm) {
     const search = filters.searchTerm.toLowerCase().trim();
     rows = rows.filter((r: any) => {
@@ -967,7 +985,7 @@ export const getDespachoReportRows = async (filters?: {
     color_live: row.color || row.payload?.color || row.payload?.COLOR || '',
     fecha_reparacion: row.payload?.done_at || null,
     completado_en: row.fecha || null,
-    fecha_entrega: row.fecha || null,
+    fecha_entrega: row.closed_at || row.payload?.closed_at || null,
     cliente: row.payload?.cliente || '',
     telefono: row.payload?.telefono || '',
     falla: row.payload?.['Mal funcionamiento *'] || row.payload?.['Mal funcionamiento'] || row.payload?.malFuncionamiento || row.payload?.falla || row.falla || '',
@@ -1551,6 +1569,30 @@ export type HistorialFechasAgregadas = {
   fecha_para_entregar: string | null;
 };
 
+export const insertOrderStatusHistory = async (entry: {
+  order_id: string;
+  status_id: number;
+  status_name: string;
+  changed_at: string;
+  source?: string;
+  source_event_id?: string | null;
+}) => {
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase.from('order_status_history').upsert(
+    {
+      order_id: entry.order_id,
+      status_id: entry.status_id,
+      status_name: entry.status_name,
+      changed_at: toIsoDate(entry.changed_at),
+      source: entry.source ?? 'webhook',
+      source_event_id: entry.source_event_id ?? null,
+    },
+    { onConflict: 'order_id,status_id,changed_at', ignoreDuplicates: true },
+  );
+  if (error && isMissingTableError(error)) return;
+  throwIfError(error, 'order_status_history');
+};
+
 export const insertHistorialMovimiento = async (entry: HistorialMovimientoInput) => {
   const supabase = getSupabaseAdmin();
   const { error } = await supabase.from('historial_movimientos').insert({
@@ -1602,13 +1644,27 @@ export type HistorialMovimientoRow = {
   estado_nuevo: string | null;
   status_id_nuevo: number | null;
   fecha_hora_cambio: string;
+  origen?: string | null;
 };
+
+const SYNTHETIC_STATUS_EVENT_SOURCES = new Set([
+  'synthetic_created',
+  'synthetic_current',
+  'backfill_incompleto',
+]);
+
+function isRealStatusEventSource(source: string | null | undefined): boolean {
+  const s = String(source ?? '').trim().toLowerCase();
+  if (!s) return true;
+  return !SYNTHETIC_STATUS_EVENT_SOURCES.has(s);
+}
 
 type OrderStatusHistoryRow = {
   order_id: string;
   status_id: number | null;
   status_name: string | null;
   changed_at: string;
+  source?: string | null;
 };
 
 /** Primera fecha por estado (columnas del reporte) agregada en aplicación. */
@@ -1624,40 +1680,65 @@ export const getHistorialEstadoFechasPorOrdenes = async (
   if (unique.length === 0) return map;
 
   const supabase = getSupabaseAdmin();
-  const chunkSize = 200;
+  const chunkSize = 40;
+  const pageSize = 1000;
   const allRows: HistorialMovimientoRow[] = [];
+
+  const fetchPages = async <T>(
+    build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  ): Promise<T[]> => {
+    const collected: T[] = [];
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await build(from, from + pageSize - 1);
+      if (error) throw error;
+      const page = data || [];
+      collected.push(...page);
+      if (page.length < pageSize) break;
+    }
+    return collected;
+  };
 
   for (let i = 0; i < unique.length; i += chunkSize) {
     const chunk = unique.slice(i, i + chunkSize);
 
-    const { data: historyData, error: historyError } = await supabase
-      .from('order_status_history')
-      .select('order_id, status_id, status_name, changed_at')
-      .in('order_id', chunk);
+    let historyData: OrderStatusHistoryRow[] = [];
+    try {
+      historyData = await fetchPages((from, to) =>
+        supabase
+          .from('order_status_history')
+          .select('order_id, status_id, status_name, changed_at, source')
+          .in('order_id', chunk)
+          .range(from, to),
+      );
+    } catch (historyError) {
+      if (!isMissingTableError(historyError)) throwIfError(historyError, 'order_status_history');
+    }
 
-    if (!historyError) {
-      for (const row of (historyData || []) as OrderStatusHistoryRow[]) {
-        allRows.push({
-          orden_id: String(row.order_id),
-          estado_nuevo: row.status_name,
-          status_id_nuevo: row.status_id,
-          fecha_hora_cambio: row.changed_at,
-        });
-      }
-    } else if (!isMissingTableError(historyError)) {
-      throwIfError(historyError, 'order_status_history');
+    for (const row of historyData) {
+      if (!isRealStatusEventSource(row.source)) continue;
+      allRows.push({
+        orden_id: String(row.order_id),
+        estado_nuevo: row.status_name,
+        status_id_nuevo: row.status_id,
+        fecha_hora_cambio: row.changed_at,
+        origen: row.source,
+      });
     }
 
     const { data, error } = await supabase
       .from('historial_movimientos')
-      .select('orden_id, estado_nuevo, status_id_nuevo, fecha_hora_cambio, grupo_nuevo')
-      .in('orden_id', chunk);
+      .select('orden_id, estado_nuevo, status_id_nuevo, fecha_hora_cambio, grupo_nuevo, origen')
+      .in('orden_id', chunk)
+      .limit(pageSize);
 
     if (error) {
       if (isMissingTableError(error)) continue;
       throwIfError(error, 'historial_movimientos');
     }
-    allRows.push(...((data || []) as HistorialMovimientoRow[]));
+    for (const row of (data || []) as HistorialMovimientoRow[]) {
+      if (!isRealStatusEventSource(row.origen)) continue;
+      allRows.push(row);
+    }
   }
 
   const byOrder = new Map<string, HistorialMovimientoRow[]>();
@@ -1688,6 +1769,33 @@ export const getHistorialEstadoFechasPorOrdenes = async (
     });
   }
 
+  return map;
+};
+
+/** Intervalos entre estados consecutivos (vw_order_status_timelapse / RPC). */
+export const getOrderStatusTimelapsePorOrdenes = async (
+  orderIds: string[],
+): Promise<Map<string, OrderStatusTimelapseRow[]>> => {
+  const unique = [...new Set(orderIds.map((id) => String(id).trim()).filter(Boolean))];
+  const map = new Map<string, OrderStatusTimelapseRow[]>();
+  if (unique.length === 0) return map;
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.rpc('get_order_status_timelapse', {
+    p_order_ids: unique,
+  });
+
+  if (error) {
+    if (isMissingTableError(error)) return map;
+    throwIfError(error, 'get_order_status_timelapse');
+  }
+
+  for (const row of (data || []) as OrderStatusTimelapseRow[]) {
+    const key = String(row.order_id);
+    const list = map.get(key) ?? [];
+    list.push(row);
+    map.set(key, list);
+  }
   return map;
 };
 

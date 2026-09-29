@@ -82,7 +82,8 @@ const FIELD_ID: Record<string, string> = {
   'COLOR':            'f3129228',
   'GARANTIA':         'f3129961',
   'FECHA DE VENTA POP': 'f3129227',
-  'IN COURIER':       'f3151083',
+  'FOLIO PDV':        'f3151083',
+  'IN COURIER':       'f3151084',
 };
 
 /**

@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { OrderryWebhookSchema } from '@/schemas/orderry';
 import crypto from 'crypto';
+import { buildOrderStatusSourceEventId } from '@/lib/order-status-history';
 import {
   appendWebhookEvent,
   insertHistorialMovimiento,
+  insertOrderStatusHistory,
   saveTechnicianMovement,
 } from '@/lib/supabase-store';
 import {
@@ -134,6 +136,22 @@ export async function POST(req: Request) {
           usuario: result.data.employee?.full_name ?? null,
           payload_crudo: payload as Record<string, unknown>,
         });
+        if (newResolved?.estado) {
+          await insertOrderStatusHistory({
+            order_id: String(metadata.order.id),
+            status_id: metadata.new.id,
+            status_name: newResolved.estado,
+            changed_at: result.data.created_at,
+            source: 'webhook',
+            source_event_id: buildOrderStatusSourceEventId({
+              source: 'webhook',
+              orderId: String(metadata.order.id),
+              statusId: metadata.new.id,
+              eventAt: result.data.created_at,
+              remoteId: result.data.id,
+            }),
+          });
+        }
         historialRecorded = true;
         console.log(
           `[historial_movimientos] OK orden ${metadata.order.id}: ` +

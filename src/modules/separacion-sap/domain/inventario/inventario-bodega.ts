@@ -1,4 +1,4 @@
-import { totalesCaja } from '../cajas/caja-utils';
+import { capturasEfectivasPorSubgrupo, totalesCaja } from '../cajas/caja-utils';
 import { CENTROS_AUTORIZADOS, ESTADOS_CAJA } from '../shared/constants';
 import type { BsdEquipo, CajaEntidad } from '../../types';
 
@@ -52,12 +52,6 @@ function serialsEmpacadosGlobal(cajas: CajaEntidad[]): Set<string> {
   return set;
 }
 
-function capturasPorCentro(cajas: CajaEntidad[], centro: string) {
-  return cajas
-    .filter((c) => c.centro === centro)
-    .flatMap((c) => c.capturas);
-}
-
 export function calcularMetricasPorBodega(
   cajas: CajaEntidad[],
   bsdEquipos: BsdEquipo[],
@@ -67,7 +61,7 @@ export function calcularMetricasPorBodega(
     const esperadasEnCajas = cajasBodega.reduce((acc, c) => acc + totalesCaja(c).cantidadEsperada, 0);
     const capturadasEnCajas = cajasBodega.reduce((acc, c) => acc + totalesCaja(c).cantidadCapturada, 0);
     const equiposEnSap = bsdEquipos.filter((e) => e.centro === bodega).length;
-    const equiposEmpacados = capturasPorCentro(cajas, bodega).length;
+    const equiposEmpacados = capturadasEnCajas;
     const equiposPendientesEmpaque = Math.max(0, equiposEnSap - equiposEmpacados);
 
     return {
@@ -114,19 +108,37 @@ export function detalleMaterialesPorBodega(
     }
   }
 
-  for (const cap of capturasPorCentro(cajas, bodega)) {
-    const prev = map.get(cap.materialCodigo);
-    if (prev) {
-      prev.empacados += 1;
-      prev.pendientes = Math.max(0, prev.totalSap - prev.empacados);
-    } else {
-      map.set(cap.materialCodigo, {
-        materialCodigo: cap.materialCodigo,
-        materialTexto: cap.materialTexto ?? cap.materialCodigo,
-        totalSap: 0,
-        empacados: 1,
-        pendientes: 0,
-      });
+  for (const caja of cajas.filter((c) => c.centro === bodega)) {
+    for (const sg of caja.subgrupos) {
+      const empacados = capturasEfectivasPorSubgrupo(caja, sg.id);
+      if (empacados <= 0) continue;
+      const prev = map.get(sg.materialCodigo);
+      if (prev) {
+        prev.empacados += empacados;
+      } else {
+        map.set(sg.materialCodigo, {
+          materialCodigo: sg.materialCodigo,
+          materialTexto: sg.materialTexto || sg.materialCodigo,
+          totalSap: 0,
+          empacados,
+          pendientes: 0,
+        });
+      }
+    }
+
+    for (const cap of caja.capturas.filter((item) => !item.subgrupoId)) {
+      const prev = map.get(cap.materialCodigo);
+      if (prev) {
+        prev.empacados += 1;
+      } else {
+        map.set(cap.materialCodigo, {
+          materialCodigo: cap.materialCodigo,
+          materialTexto: cap.materialTexto ?? cap.materialCodigo,
+          totalSap: 0,
+          empacados: 1,
+          pendientes: 0,
+        });
+      }
     }
   }
 

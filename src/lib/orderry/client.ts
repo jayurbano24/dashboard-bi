@@ -136,6 +136,14 @@ export class OrderryClient {
     return this.request<OrderryOrder>(`/v2/orders/${encodeURIComponent(id)}`);
   }
 
+  /** GET /v2/orders/{id}/items — repuestos/obras con created_at (proxy de reparación si no hay historial). */
+  async getOrderItems(orderId: number | string): Promise<Array<{ created_at?: string | null }>> {
+    const id = String(orderId).trim();
+    if (!id) return [];
+    const body = await this.request<unknown>(`/v2/orders/${encodeURIComponent(id)}/items`);
+    return Array.isArray(body) ? (body as Array<{ created_at?: string | null }>) : [];
+  }
+
   /** GET /v2/orders con paginación y filtros documentados. */
   async listOrders(params: ListOrdersParams = {}): Promise<OrderryPagedResponse<OrderryOrder>> {
     const query: Record<string, string | string[] | undefined> = {

@@ -44,17 +44,17 @@ const pickProducto = (row: RawOrderData): string => {
   );
 };
 
-/** Servitotal usa IN COURIER (f3151083) como folio de entrega, no FOLIO PDV. */
+/** Folio de entrega: FOLIO PDV (f3151083). Payloads viejos lo guardaron bajo IN COURIER. */
 const pickFolio = (row: RawOrderData): string => {
   const raw = (row.rawRecord || {}) as Record<string, unknown>;
   const cf = raw.custom_fields as Record<string, unknown> | undefined;
+  const fromFolio =
+    pickRaw(row, 'FOLIO PDV', 'folioPdv') ||
+    getOrderryCustomField(cf, 'FOLIO PDV');
+  if (fromFolio) return fromFolio;
 
-  return (
-    pickRaw(row, 'IN COURIER', 'inCourier') ||
-    getOrderryCustomField(cf, 'IN COURIER') ||
-    getStr(row.folioPdv) ||
-    pickRaw(row, 'FOLIO PDV', 'folioPdv')
-  );
+  const legacy = pickRaw(row, 'IN COURIER', 'inCourier');
+  return /\d/.test(legacy) ? legacy : '';
 };
 
 const pickEntregadoDate = (

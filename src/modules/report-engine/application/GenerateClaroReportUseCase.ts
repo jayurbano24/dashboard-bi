@@ -4,7 +4,12 @@ import { SLAEngine } from '../domain/SLAEngine';
 import { CatalogEngine } from '../domain/CatalogEngine';
 import { HomologationEngine } from '../domain/HomologationEngine';
 import { ValidationEngine } from '../domain/ValidationEngine';
-import { buildClaroOrigenFechas, CLARO_HISTORIAL_DATE_KEYS } from '../shared/claro-date-sources';
+import {
+  buildClaroOrigenFechas,
+  CLARO_HISTORIAL_DATE_KEYS,
+  mergeOrderryLiveHintsIntoHistorial,
+  type OrderryTimelineHintsLike,
+} from '../shared/claro-date-sources';
 
 export class GenerateClaroReportUseCase {
   public execute(
@@ -28,12 +33,14 @@ export class GenerateClaroReportUseCase {
       }
 
       const orderKey = row.orderId ? String(row.orderId) : String(row.orderName || '').trim();
-      const histRaw = historialDatesByOrder.get(orderKey) ?? {};
+      const hints = (row as { orderryTimelineHints?: OrderryTimelineHintsLike }).orderryTimelineHints;
+      const histRaw = mergeOrderryLiveHintsIntoHistorial(historialDatesByOrder.get(orderKey) ?? {}, hints);
       const origenHistorial = historialOrigenByOrder.get(orderKey);
 
       const stageDates = {
         transito: histRaw[CLARO_HISTORIAL_DATE_KEYS.envioTiendaCac] ?? '',
         reparacion: histRaw[CLARO_HISTORIAL_DATE_KEYS.reparacionCsa] ?? '',
+        entrega: histRaw['Fecha Entregado'] ?? '',
       };
 
       const homologated = homologation.homologateRow(row, {

@@ -538,13 +538,33 @@ export default function DespachoPagina() {
       if (reportRegion) params.append('region', reportRegion);
 
       const res = await fetch(`/api/despacho/report?${params.toString()}`, { cache: 'no-store' });
-      const data = await res.json();
+      const raw = await res.text();
+      let data: {
+        ok?: boolean;
+        rows?: unknown;
+        hint?: unknown;
+        error?: string;
+        meta?: { timelineCapture?: { capturedOrders?: number; skippedNoSession?: boolean } };
+      } = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        showNotification(
+          `El servidor respondió ${res.status} con una página HTML. Vuelve a cargar el reporte.`,
+          'error',
+        );
+        return;
+      }
       if (data.ok && Array.isArray(data.rows)) {
         setReportRows(data.rows);
         setReportHint(typeof data.hint === 'string' ? data.hint : '');
         setReportPage(1);
         if (data.rows.length === 0 && data.hint) {
           showNotification(String(data.hint), 'error');
+        } else if (data.meta?.timelineCapture?.skippedNoSession && data.hint) {
+          showNotification(String(data.hint), 'error');
+        } else if ((data.meta?.timelineCapture?.capturedOrders ?? 0) > 0 && data.hint) {
+          showNotification(String(data.hint), 'success');
         }
       } else {
         setReportHint('');

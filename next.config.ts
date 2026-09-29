@@ -2,6 +2,8 @@ import path from "path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Playwright se carga solo si hay sesión local; no empaquetarlo en la función de Vercel.
+  serverExternalPackages: ['playwright'],
   // Keep dev artifacts isolated from production build output.
   // This avoids intermittent ENOENT on routes-manifest when different Next processes touch .next.
   distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',

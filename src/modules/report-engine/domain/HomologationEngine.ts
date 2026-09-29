@@ -4,6 +4,11 @@ import { SLAEngine } from './SLAEngine';
 import {
   CLARO_HISTORIAL_DATE_KEYS,
   resolveClaroDevolverDate,
+  resolveClaroEntregaCacDate,
+  resolveClaroEnvioCacDate,
+  resolveClaroFolioCreacionDate,
+  resolveClaroRecepcionTallerDate,
+  resolveClaroReparacionCsaDate,
 } from '../shared/claro-date-sources';
 
 export type ClaroHomologationContext = {
@@ -23,8 +28,10 @@ export class HomologationEngine {
 
   /** Lógica legacy (payload / campos duplicados) — solo para scripts de comparación SLA. */
   public homologateRowLegacy(row: RawOrderData): ClaroReportRow {
+    const created = row.created_at || row.fecha;
     return this.buildRow(row, {
-      createdAt: row.created_at || row.fecha,
+      createdAt: created,
+      fechaRecepcionTaller: created,
       closedAt: row.closed_at ?? null,
       fechaEnvioTienda: row.fechaEnvioTienda,
       fechaReparacion: row.done_at || row.fecha_reparacion || null,
@@ -39,13 +46,16 @@ export class HomologationEngine {
   public homologateRow(row: RawOrderData, context: ClaroHomologationContext = {}): ClaroReportRow {
     const hist = context.historialDates ?? {};
 
+    const fechaEntregaCac = resolveClaroEntregaCacDate(hist, row.closed_at ?? null);
+
     return this.buildRow(row, {
-      createdAt: row.created_at ?? null,
-      closedAt: row.closed_at ?? null,
+      createdAt: resolveClaroFolioCreacionDate(hist, row.created_at ?? null),
+      fechaRecepcionTaller: resolveClaroRecepcionTallerDate(hist, row.created_at ?? null),
+      closedAt: fechaEntregaCac,
       fechaEnvioTienda: hist[CLARO_HISTORIAL_DATE_KEYS.envioTiendaCac] || null,
-      fechaReparacion: hist[CLARO_HISTORIAL_DATE_KEYS.reparacionCsa] || row.done_at || null,
-      fechaEnvioCac: null,
-      fechaEntregaCac: row.closed_at ?? null,
+      fechaReparacion: resolveClaroReparacionCsaDate(hist, row),
+      fechaEnvioCac: resolveClaroEnvioCacDate(row, hist),
+      fechaEntregaCac,
       fechaGrupoGanado: hist[CLARO_HISTORIAL_DATE_KEYS.grupoGanado] || null,
       fechaDevolver: resolveClaroDevolverDate(row, hist),
       origenFechas: context.origenFechas ?? '',
@@ -56,6 +66,7 @@ export class HomologationEngine {
     row: RawOrderData,
     dates: {
       createdAt: unknown;
+      fechaRecepcionTaller: unknown;
       closedAt: unknown;
       fechaEnvioTienda: unknown;
       fechaReparacion: unknown;
@@ -89,9 +100,10 @@ export class HomologationEngine {
     const gamNoGam = this.catalog.isGam(region) ? 'GAM' : 'NO GAM';
 
     const createdDate = parseDate(dates.createdAt);
-    const closedDate = parseDate(dates.closedAt);
+    const recepcionTallerDate = parseDate(dates.fechaRecepcionTaller ?? dates.createdAt);
+    const closedDate = parseDate(dates.fechaEntregaCac ?? dates.closedAt);
 
-    const slaResult = this.slaEngine.calculateSLA(createdDate, closedDate, region);
+    const slaResult = this.slaEngine.calculateSLA(recepcionTallerDate, closedDate, gamNoGam);
 
     const estadoOriginal = getStr(row.estado).toUpperCase();
     const estatus = ['ENTREGADO', 'CLOSED', 'CERRADO'].includes(estadoOriginal) ? 'REPARADO' : getStr(row.estado);
@@ -114,7 +126,7 @@ export class HomologationEngine {
       Teléfono: getStr(row.telefono),
       'Fecha creación Folio': formatDate(createdDate),
       'Fecha envío por parte tienda CAC': formatDate(parseDate(dates.fechaEnvioTienda)),
-      'Fecha Recepción Taller CSA': formatDate(createdDate),
+      'Fecha Recepción Taller CSA': formatDate(recepcionTallerDate),
       'Fecha reparación CSA': formatDate(parseDate(dates.fechaReparacion)),
       'Fecha Envío CAC': formatDate(parseDate(dates.fechaEnvioCac)),
       'Fecha entrega CAC': formatDate(parseDate(dates.fechaEntregaCac)),
