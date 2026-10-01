@@ -38,11 +38,25 @@ export function resumenSubgruposCaja(caja: CajaEntidad): string {
   return `${primero.marca} ${primero.modelo} +${caja.subgrupos.length - 1}`;
 }
 
+export type LineaMaterialCaja = { codigo: string; texto: string };
+
+/** Un renglón por código SAP, con el texto del material. */
+export function lineasMaterialCaja(caja: CajaEntidad): LineaMaterialCaja[] {
+  const seen = new Map<string, string>();
+  for (const sg of caja.subgrupos) {
+    const codigo = sg.materialCodigo.trim();
+    if (!codigo || seen.has(codigo)) continue;
+    seen.set(codigo, sg.materialTexto.trim());
+  }
+  return [...seen.entries()].map(([codigo, texto]) => ({ codigo, texto }));
+}
+
 export function resumenMaterialesCaja(caja: CajaEntidad): string {
-  const codigos = [...new Set(caja.subgrupos.map((sg) => sg.materialCodigo))];
-  if (codigos.length === 0) return '—';
-  if (codigos.length === 1) return codigos[0];
-  return `${codigos[0]} +${codigos.length - 1}`;
+  const lineas = lineasMaterialCaja(caja);
+  if (lineas.length === 0) return '—';
+  const primera = lineas[0].texto ? `${lineas[0].codigo} · ${lineas[0].texto}` : lineas[0].codigo;
+  if (lineas.length === 1) return primera;
+  return `${primera} +${lineas.length - 1}`;
 }
 
 export function conteoMaterialesCaja(caja: CajaEntidad): number {

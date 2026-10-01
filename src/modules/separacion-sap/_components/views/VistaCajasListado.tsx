@@ -18,7 +18,7 @@ import {
 import { useSeparacionSap } from '../../application/context';
 import {
   detalleCantidadesSubgrupos,
-  resumenMaterialesCaja,
+  lineasMaterialCaja,
   resumenSubgruposCaja,
   resumenTotalesCaja,
   totalesCaja,
@@ -56,6 +56,30 @@ type VistaCajasListadoProps = {
 
 const iconBtnBase =
   'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition disabled:opacity-40';
+
+function DetalleMaterialCaja({ caja }: { caja: CajaEntidad }) {
+  const lineas = lineasMaterialCaja(caja);
+  if (lineas.length === 0) {
+    return <span className="text-slate-400">—</span>;
+  }
+
+  const primera = lineas[0];
+  const titulo = lineas.map((linea) => (linea.texto ? `${linea.codigo} · ${linea.texto}` : linea.codigo)).join('\n');
+
+  return (
+    <div className="min-w-0" title={titulo}>
+      <div className="font-mono font-semibold text-slate-800 truncate">{primera.codigo}</div>
+      {primera.texto ? (
+        <div className="text-[10px] leading-tight text-slate-500 truncate">{primera.texto}</div>
+      ) : null}
+      {lineas.length > 1 ? (
+        <div className="text-[9px] font-semibold text-slate-400">
+          +{lineas.length - 1} material{lineas.length > 2 ? 'es' : ''}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function CajaAccionesIconBar({
   caja,
@@ -409,7 +433,7 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
 
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs w-full">
         <div className="overflow-x-auto w-full">
-          <table className="w-full min-w-[920px] text-[11px] text-left">
+          <table className="w-full min-w-[1080px] text-[11px] text-left">
             <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
               <tr>
                 <th className="px-1.5 py-1 whitespace-nowrap">
@@ -453,9 +477,9 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                     onChange={(v) => setFiltroColumna('marcaModelo', v)}
                   />
                 </th>
-                <th className="hidden 2xl:table-cell px-1.5 py-1">
+                <th className="px-1.5 py-1 min-w-[180px]">
                   <ColumnHeaderFilter
-                    label="Material SAP"
+                    label="Material"
                     options={opcionesUnicasColumna(cajasBase, 'materialSap')}
                     selected={filtrosColumna.materialSap}
                     onChange={(v) => setFiltroColumna('materialSap', v)}
@@ -529,11 +553,8 @@ export function VistaCajasListado({ onSeleccionarCaja, cajaPrioritariaId = null 
                       <td className="px-1.5 py-1 text-slate-700 truncate max-w-[200px]" title={resumenSubgruposCaja(c)}>
                         {resumenSubgruposCaja(c)}
                       </td>
-                      <td
-                        className="hidden 2xl:table-cell px-1.5 py-1 font-mono text-slate-600 truncate max-w-[100px]"
-                        title={resumenMaterialesCaja(c)}
-                      >
-                        {resumenMaterialesCaja(c)}
+                      <td className="px-1.5 py-1 max-w-[240px]">
+                        <DetalleMaterialCaja caja={c} />
                       </td>
                       <td
                         className="px-1.5 py-1 text-center"
