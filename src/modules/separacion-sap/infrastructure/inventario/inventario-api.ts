@@ -1,3 +1,4 @@
+import type { SeriePendienteBodega } from '../../domain/inventario/inventario-bodega';
 import type { BsdEquipo } from '../../types';
 
 export type InventarioSapImportMeta = {
@@ -41,6 +42,21 @@ async function parseJson<T>(response: Response): Promise<T> {
     throw new Error(data?.error ?? `Error del servidor (${response.status}).`);
   }
   return data;
+}
+
+export type SeriesPendientesGetResponse = {
+  ok: true;
+  centro: string;
+  total: number;
+  series: SeriePendienteBodega[];
+};
+
+export async function fetchSeriesPendientesEmpaque(centro: string): Promise<SeriesPendientesGetResponse> {
+  const params = new URLSearchParams({ centro });
+  const response = await fetch(`/api/separacion-sap/inventario/series-pendientes?${params}`, {
+    cache: 'no-store',
+  });
+  return parseJson<SeriesPendientesGetResponse>(response);
 }
 
 export async function fetchInventarioSap(): Promise<InventarioGetResponse> {

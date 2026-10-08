@@ -5,6 +5,37 @@ import { fetchAllPages } from '@/app/api/separacion-sap/_lib/supabase-fetch-all'
 
 type AdminClient = ReturnType<typeof getSupabaseAdmin>;
 
+export async function fetchCajaIdsPorCentro(admin: AdminClient, centro: string): Promise<string[]> {
+  const centroNorm = centro.trim().toUpperCase();
+  const rows = await fetchAllPages<{ id: string }>((from, to) =>
+    admin
+      .from('separacion_sap_cajas')
+      .select('id')
+      .eq('centro', centroNorm)
+      .order('creada_en', { ascending: false })
+      .range(from, to)
+      .then(({ data, error }) => ({ data: data as { id: string }[] | null, error })),
+  );
+  return rows.map((row) => row.id);
+}
+
+/** Todas las series normalizadas ya capturadas en cajas del centro (desde Supabase). */
+export async function fetchEmpacadosSerialsPorCentro(
+  admin: AdminClient,
+  centro: string,
+): Promise<Set<string>> {
+  const cajaIds = await fetchCajaIdsPorCentro(admin, centro);
+  if (cajaIds.length === 0) return new Set();
+
+  const capturas = await fetchAllCapturasForCajaIds(admin, cajaIds);
+  const set = new Set<string>();
+  for (const row of capturas) {
+    set.add(row.normalized_serial);
+    if (row.normalized_serial_s2) set.add(row.normalized_serial_s2);
+  }
+  return set;
+}
+
 export async function fetchAllCapturasForCajaIds(
   admin: AdminClient,
   cajaIds: string[],

@@ -42,11 +42,13 @@ export type SeriePendienteBodega = {
   statusSistema: string;
 };
 
-function serialsEmpacadosGlobal(cajas: CajaEntidad[]): Set<string> {
+/** Series ya capturadas en cajas (solo filas cargadas en memoria). */
+export function serialsEmpacadosDesdeCajas(cajas: CajaEntidad[]): Set<string> {
   const set = new Set<string>();
   for (const caja of cajas) {
     for (const cap of caja.capturas) {
       set.add(cap.normalizedSerial);
+      if (cap.normalizedSerialS2) set.add(cap.normalizedSerialS2);
     }
   }
   return set;
@@ -155,8 +157,9 @@ export function seriesPendientesEmpaquePorBodega(
   bodega: string,
   cajas: CajaEntidad[],
   bsdEquipos: BsdEquipo[],
+  empacadosSerials?: Set<string>,
 ): SeriePendienteBodega[] {
-  const empacados = serialsEmpacadosGlobal(cajas);
+  const empacados = empacadosSerials ?? serialsEmpacadosDesdeCajas(cajas);
 
   return bsdEquipos
     .filter((eq) => eq.centro === bodega && !empacados.has(eq.normalizedSerial))

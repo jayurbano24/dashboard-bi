@@ -5,13 +5,10 @@ import { BarChart } from '@tremor/react';
 import { Building2, ChevronDown, ChevronUp, Download, Package, TrendingUp } from 'lucide-react';
 import { useSeparacionSap } from '../../application/context';
 import { CENTROS_AUTORIZADOS } from '../../domain/shared/constants';
-import {
-  calcularMetricasPorBodega,
-  detalleMaterialesPorBodega,
-  seriesPendientesEmpaquePorBodega,
-} from '../../domain/inventario/inventario-bodega';
+import { calcularMetricasPorBodega, detalleMaterialesPorBodega } from '../../domain/inventario/inventario-bodega';
 import { exportarSeriesPendientesBodega } from '../../domain/inventario/series-pendientes-excel';
 import { inventarioSapCargado } from '../../domain/inventario/sap-inventory';
+import { fetchSeriesPendientesEmpaque } from '../../infrastructure/inventario/inventario-api';
 import { CentroBadge } from '../badges';
 
 export function VistaDashboard() {
@@ -48,7 +45,7 @@ export function VistaDashboard() {
     if (!sapCargado) return;
     setDescargandoBodega(bodega);
     try {
-      const series = seriesPendientesEmpaquePorBodega(bodega, state.cajas, state.bsdEquipos);
+      const { series } = await fetchSeriesPendientesEmpaque(bodega);
       await exportarSeriesPendientesBodega(bodega, series);
     } finally {
       setDescargandoBodega(null);
