@@ -75,9 +75,9 @@ export async function loadCentrosDisponibles(): Promise<string[]> {
     from += PAGE_SIZE;
   }
 
-  const ordenados = CENTROS_AUTORIZADOS.filter((c) => centros.has(c));
+  const ordenados: string[] = CENTROS_AUTORIZADOS.filter((c) => centros.has(c));
   for (const c of centros) {
-    if (!ordenados.includes(c as (typeof CENTROS_AUTORIZADOS)[number])) {
+    if (!ordenados.includes(c)) {
       ordenados.push(c);
     }
   }

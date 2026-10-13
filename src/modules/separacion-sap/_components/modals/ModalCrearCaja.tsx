@@ -10,9 +10,9 @@ import { CentroBadge } from '../badges';
 
 function ordenarCentrosSap(detected: string[]): string[] {
   const fromApi = new Set(detected.map((c) => c.trim().toUpperCase()).filter(Boolean));
-  const ordenados = CENTROS_AUTORIZADOS.filter((c) => fromApi.has(c));
+  const ordenados: string[] = CENTROS_AUTORIZADOS.filter((c) => fromApi.has(c));
   for (const c of fromApi) {
-    if (!ordenados.includes(c as (typeof CENTROS_AUTORIZADOS)[number])) {
+    if (!ordenados.includes(c)) {
       ordenados.push(c);
     }
   }
