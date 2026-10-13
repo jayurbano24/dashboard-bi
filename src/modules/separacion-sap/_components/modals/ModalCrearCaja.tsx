@@ -4,8 +4,20 @@ import { useEffect, useState } from 'react';
 import { Building2, X } from 'lucide-react';
 import { useSeparacionSap } from '../../application/context';
 import { ALMACENES_DISPONIBLES, CENTROS_AUTORIZADOS } from '../../domain/shared/constants';
+import { isAuthErrorMessage, redirectToLoginFromSeparacionSap } from '../../infrastructure/api-fetch';
 import { crearCajaSeparacionSap, fetchCentrosSap } from '../../infrastructure/cajas/cajas-api';
 import { CentroBadge } from '../badges';
+
+function ordenarCentrosSap(detected: string[]): string[] {
+  const fromApi = new Set(detected.map((c) => c.trim().toUpperCase()).filter(Boolean));
+  const ordenados = CENTROS_AUTORIZADOS.filter((c) => fromApi.has(c));
+  for (const c of fromApi) {
+    if (!ordenados.includes(c as (typeof CENTROS_AUTORIZADOS)[number])) {
+      ordenados.push(c);
+    }
+  }
+  return ordenados.length > 0 ? [...ordenados] : [...CENTROS_AUTORIZADOS];
+}
 
 type ModalCrearCajaProps = {
   onClose: () => void;
@@ -23,8 +35,9 @@ export function ModalCrearCaja({ onClose, onCreated }: ModalCrearCajaProps) {
     void fetchCentrosSap()
       .then((res) => {
         if (res.centros.length > 0) {
-          setCentros(res.centros);
-          setCentro((prev) => (res.centros.includes(prev) ? prev : res.centros[0]));
+          const ordenados = ordenarCentrosSap(res.centros);
+          setCentros(ordenados);
+          setCentro((prev) => (ordenados.includes(prev) ? prev : ordenados[0]));
         }
       })
       .catch(() => {
@@ -48,6 +61,10 @@ export function ModalCrearCaja({ onClose, onCreated }: ModalCrearCajaProps) {
       onClose();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'No se pudo crear la caja.';
+      if (isAuthErrorMessage(message)) {
+        redirectToLoginFromSeparacionSap();
+        return;
+      }
       setErrorLocal(message);
       dispatch({ type: 'SET_ERROR_GLOBAL', payload: message });
     } finally {

@@ -1,4 +1,5 @@
 import type { SeriePendienteBodega } from '../../domain/inventario/inventario-bodega';
+import { separacionSapFetch } from '../api-fetch';
 import type { BsdEquipo } from '../../types';
 
 export type InventarioSapImportMeta = {
@@ -53,14 +54,14 @@ export type SeriesPendientesGetResponse = {
 
 export async function fetchSeriesPendientesEmpaque(centro: string): Promise<SeriesPendientesGetResponse> {
   const params = new URLSearchParams({ centro });
-  const response = await fetch(`/api/separacion-sap/inventario/series-pendientes?${params}`, {
+  const response = await separacionSapFetch(`/api/separacion-sap/inventario/series-pendientes?${params}`, {
     cache: 'no-store',
   });
   return parseJson<SeriesPendientesGetResponse>(response);
 }
 
 export async function fetchInventarioSap(): Promise<InventarioGetResponse> {
-  const response = await fetch('/api/separacion-sap/inventario', { cache: 'no-store' });
+  const response = await separacionSapFetch('/api/separacion-sap/inventario', { cache: 'no-store' });
   return parseJson<InventarioGetResponse>(response);
 }
 
@@ -68,7 +69,7 @@ export async function guardarInventarioSapArchivo(file: File): Promise<Inventari
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch('/api/separacion-sap/inventario', {
+  const response = await separacionSapFetch('/api/separacion-sap/inventario', {
     method: 'POST',
     body: formData,
   });

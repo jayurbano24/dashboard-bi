@@ -1,3 +1,4 @@
+import { separacionSapFetch } from '../api-fetch';
 import type {
   CapturaSerie,
   CajaEntidad,
@@ -22,12 +23,12 @@ export type CajasGetResponse = {
 };
 
 export async function fetchCajasSeparacionSap(): Promise<CajasGetResponse> {
-  const response = await fetch('/api/separacion-sap/cajas', { cache: 'no-store' });
+  const response = await separacionSapFetch('/api/separacion-sap/cajas', { cache: 'no-store' });
   return parseJson<CajasGetResponse>(response);
 }
 
 export async function fetchCajaSeparacionSap(cajaId: string): Promise<{ ok: true; caja: CajaEntidad }> {
-  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}`, { cache: 'no-store' });
+  const response = await separacionSapFetch(`/api/separacion-sap/cajas/${cajaId}`, { cache: 'no-store' });
   return parseJson(response);
 }
 
@@ -40,7 +41,7 @@ export type CrearCajaPayload = {
 };
 
 export async function crearCajaSeparacionSap(payload: CrearCajaPayload): Promise<{ ok: true; caja: CajaEntidad }> {
-  const response = await fetch('/api/separacion-sap/cajas', {
+  const response = await separacionSapFetch('/api/separacion-sap/cajas', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -52,7 +53,7 @@ export async function registrarCapturaSeparacionSap(
   cajaId: string,
   captura: CapturaSerie,
 ): Promise<{ ok: true; captura: CapturaSerie; caja: CajaEntidad }> {
-  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}/capturas`, {
+  const response = await separacionSapFetch(`/api/separacion-sap/cajas/${cajaId}/capturas`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(captura),
@@ -64,7 +65,7 @@ export async function actualizarSubgruposCajaSeparacionSap(
   cajaId: string,
   subgrupos: Array<CrearSubgrupoInput & { id?: string }>,
 ): Promise<{ ok: true; caja: CajaEntidad }> {
-  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}/subgrupos`, {
+  const response = await separacionSapFetch(`/api/separacion-sap/cajas/${cajaId}/subgrupos`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ subgrupos }),
@@ -76,14 +77,14 @@ export async function eliminarSubgrupoCajaSeparacionSap(
   cajaId: string,
   subgrupoId: string,
 ): Promise<{ ok: true; caja: CajaEntidad }> {
-  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}/subgrupos/${subgrupoId}`, {
+  const response = await separacionSapFetch(`/api/separacion-sap/cajas/${cajaId}/subgrupos/${subgrupoId}`, {
     method: 'DELETE',
   });
   return parseJson(response);
 }
 
 export async function fetchCentrosSap(): Promise<{ ok: true; centros: string[] }> {
-  const response = await fetch('/api/separacion-sap/centros', { cache: 'no-store' });
+  const response = await separacionSapFetch('/api/separacion-sap/centros', { cache: 'no-store' });
   return parseJson(response);
 }
 
@@ -112,7 +113,7 @@ export async function lookupSerieSap(params: {
   centroCaja: string;
   cajaId?: string;
 }): Promise<SerieLookupResponse> {
-  const response = await fetch('/api/separacion-sap/series/lookup', {
+  const response = await separacionSapFetch('/api/separacion-sap/series/lookup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
@@ -147,7 +148,7 @@ export async function crearSubgrupoGuiadoSeparacionSap(
   cajaId: string,
   payload: CrearSubgrupoGuiadoPayload,
 ): Promise<{ ok: true; caja: CajaEntidad; subgrupoId: string }> {
-  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}/subgrupos`, {
+  const response = await separacionSapFetch(`/api/separacion-sap/cajas/${cajaId}/subgrupos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -158,7 +159,7 @@ export async function crearSubgrupoGuiadoSeparacionSap(
 export async function eliminarCajaSeparacionSap(
   cajaId: string,
 ): Promise<{ ok: true; id: string; numeroCaja: string }> {
-  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}`, { method: 'DELETE' });
+  const response = await separacionSapFetch(`/api/separacion-sap/cajas/${cajaId}`, { method: 'DELETE' });
   return parseJson(response);
 }
 
@@ -167,7 +168,7 @@ export async function actualizarEstadoCajaSeparacionSap(
   estado: EstadoCaja,
   extras?: { ubicacion?: string; tarima?: string },
 ): Promise<{ ok: true; caja: CajaEntidad }> {
-  const response = await fetch(`/api/separacion-sap/cajas/${cajaId}`, {
+  const response = await separacionSapFetch(`/api/separacion-sap/cajas/${cajaId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ estado, ...extras }),

@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useMemo, useReducer, type ReactNo
 import { createInitialSeparacionSapState } from './seeds';
 import { separacionSapReducer, type SeparacionSapAction } from './reducer';
 import { fetchCajasSeparacionSap } from '../infrastructure/cajas/cajas-api';
+import { isAuthErrorMessage, redirectToLoginFromSeparacionSap } from '../infrastructure/api-fetch';
 import { fetchInventarioSap } from '../infrastructure/inventario/inventario-api';
 import type { SeparacionSapState } from '../types';
 
@@ -58,6 +59,10 @@ export function SeparacionSapProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'SET_INVENTARIO_CARGANDO', payload: false });
           dispatch({ type: 'SET_CAJAS_CARGANDO', payload: false });
           const message = err instanceof Error ? err.message : 'No se pudo cargar datos desde Supabase.';
+          if (isAuthErrorMessage(message)) {
+            redirectToLoginFromSeparacionSap();
+            return;
+          }
           dispatch({ type: 'SET_ERROR_GLOBAL', payload: message });
         }
       }

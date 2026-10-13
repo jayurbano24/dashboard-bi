@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
+import { CENTROS_AUTORIZADOS } from '@/modules/separacion-sap/domain/shared/constants';
 import { rowToEquipo, type BsdImportRow } from '@/modules/separacion-sap/infrastructure/inventario/inventario-mapper';
 import type { BsdEquipo } from '@/modules/separacion-sap/types';
 
@@ -47,16 +48,39 @@ export async function loadBsdEquiposActivos(): Promise<BsdEquipo[]> {
 
 export async function loadCentrosDisponibles(): Promise<string[]> {
   const admin = getSupabaseAdmin();
-  const { data, error } = await admin.from('separacion_sap_bsd_equipos').select('centro');
-
-  if (error) throw new Error(error.message);
-
-  const centros = new Set<string>();
-  for (const row of data ?? []) {
-    const centro = (row as { centro: string }).centro?.trim();
-    if (centro) centros.add(centro.toUpperCase());
+  const activeImport = await fetchActiveImport(admin);
+  if (!activeImport) {
+    return [...CENTROS_AUTORIZADOS];
   }
 
-  const sorted = [...centros].sort();
-  return sorted.length > 0 ? sorted : ['G945', 'G935', 'G944'];
+  const centros = new Set<string>();
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await admin
+      .from('separacion_sap_bsd_equipos')
+      .select('centro')
+      .eq('import_batch_id', activeImport.id)
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) throw new Error(error.message);
+
+    const page = data ?? [];
+    for (const row of page) {
+      const centro = (row as { centro: string }).centro?.trim();
+      if (centro) centros.add(centro.toUpperCase());
+    }
+
+    if (page.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  const ordenados = CENTROS_AUTORIZADOS.filter((c) => centros.has(c));
+  for (const c of centros) {
+    if (!ordenados.includes(c as (typeof CENTROS_AUTORIZADOS)[number])) {
+      ordenados.push(c);
+    }
+  }
+
+  return ordenados.length > 0 ? [...ordenados] : [...CENTROS_AUTORIZADOS];
 }

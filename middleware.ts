@@ -4,6 +4,9 @@ import { updateSession } from '@/lib/supabase/middleware';
 // Rutas públicas (no requieren login)
 const PUBLIC_PATHS = ['/login', '/auth/callback'];
 
+/** APIs sin cookie de usuario (webhooks, cron, integraciones externas). */
+const PUBLIC_API_PREFIXES = ['/api/webhooks', '/api/cron', '/api/isp'];
+
 // Rutas que requieren rol 'admin'
 const ADMIN_PATHS = ['/admin'];
 
@@ -37,18 +40,28 @@ function canAccess(role: string | null, pathname: string): boolean {
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Permitir rutas públicas y assets
-  if (
-    PUBLIC_PATHS.some((p) => pathname.startsWith(p)) ||
-    pathname === '/no-access' ||
-    pathname.startsWith('/_next') ||
-    pathname.startsWith('/api') ||
-    pathname.startsWith('/favicon')
-  ) {
+  if (pathname.startsWith('/_next') || pathname.startsWith('/favicon')) {
+    return NextResponse.next();
+  }
+
+  if (PUBLIC_API_PREFIXES.some((p) => pathname.startsWith(p))) {
+    return NextResponse.next();
+  }
+
+  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
   }
 
   const { supabaseResponse, user, supabase } = await updateSession(request);
+
+  // Renovar cookies de sesión en APIs autenticadas (fetch desde el cliente).
+  if (pathname.startsWith('/api')) {
+    return supabaseResponse;
+  }
+
+  if (pathname === '/no-access') {
+    return supabaseResponse;
+  }
 
   // No autenticado → redirigir al login
   if (!user) {

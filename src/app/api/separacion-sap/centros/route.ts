@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server';
 import { loadCentrosDisponibles } from '@/app/api/separacion-sap/_lib/load-bsd';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 async function requireUser() {
   const supabase = await createClient();
